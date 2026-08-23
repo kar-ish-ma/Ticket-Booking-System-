@@ -58,12 +58,20 @@ export default [
     // The default flags every function, including small private helpers, which would make the
     // rule noise instead of signal. Scoping to exported declarations matches CLAUDE.md's actual
     // rule: "every exported function gets JSDoc" — internal helpers are exempt.
+    //
+    // WHY `require: { FunctionDeclaration: false }` is also necessary, not just `contexts`:
+    // Discovered live at P1-4 (server/src/queue/poller.js's internal, unexported completeJob()
+    // and failJob() were flagged despite not matching either context). `contexts` ADDS checks on
+    // top of the rule's default `require` object, which defaults FunctionDeclaration to true for
+    // every function declaration regardless of export status -- it doesn't REPLACE that default.
+    // Without this, `contexts` was never actually doing the scoping the comment above claims.
     files: ['server/src/**/*.js', 'shared/**/*.js'],
     plugins: { jsdoc },
     rules: {
       'jsdoc/require-jsdoc': [
         'warn',
         {
+          require: { FunctionDeclaration: false },
           contexts: [
             'ExportNamedDeclaration > FunctionDeclaration',
             'ExportDefaultDeclaration > FunctionDeclaration',

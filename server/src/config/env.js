@@ -84,7 +84,14 @@ const schema = z
     // SMTP_HOST is empty (server/src/mail/mailer.js, P4-7). Only required once a real SMTP
     // provider is configured for production.
     SMTP_HOST: z.string().default(''),
-    SMTP_PORT: z.coerce.number().int().positive().optional(),
+    // WHY the preprocess step: SMTP_PORT="" (an empty-but-present line, exactly what
+    // .env.example ships) coerces to the NUMBER 0 via plain z.coerce.number() -- JS's Number('')
+    // is 0, not NaN -- which then fails .positive() with a confusing error instead of just being
+    // treated as "not set." Caught live running the P1-1 migration against a real .env.
+    SMTP_PORT: z.preprocess(
+      (val) => (val === '' ? undefined : val),
+      z.coerce.number().int().positive().optional()
+    ),
     SMTP_USER: z.string().default(''),
     SMTP_PASS: z.string().default(''),
     MAIL_FROM: z.string().default(''),

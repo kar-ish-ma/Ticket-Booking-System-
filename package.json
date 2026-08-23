@@ -12,6 +12,9 @@
   ],
   "scripts": {
     "dev:server": "npm run dev --workspace=server",
+    "db:migrate": "npm run migrate:up --workspace=server",
+    "db:migrate:down": "npm run migrate:down --workspace=server",
+    "db:reset": "npm run migrate:reset --workspace=server",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
