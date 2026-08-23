@@ -43,10 +43,10 @@ Plain ESM modules. The point is that a contract exists in exactly one place.
 | File | Purpose |
 |---|---|
 | `package.json` | Workspace manifest. `name: "shared"`, `type: module`. No dependencies of its own — it's imported by path from `server`/`client`, not installed as a package. |
-| `errors.js` | 🔒 Canonical error-code constants with a comment on each: when it's thrown and what the UI should do. Server throws these; client switches on them. Created at P0-4 with only the two generic codes (`INTERNAL_ERROR`, `NOT_FOUND`) a bare Express skeleton needs — domain-specific codes (`SEATS_UNAVAILABLE`, `HOLD_EXPIRED`, ...) are added by the phase that introduces the mechanism they describe. |
+| `errors.js` | 🔒 Canonical error-code constants with a comment on each: when it's thrown and what the UI should do. Server throws these; client switches on them. Created at P0-4 with only the two generic codes (`INTERNAL_ERROR`, `NOT_FOUND`) a bare Express skeleton needs — domain-specific codes (`SEATS_UNAVAILABLE`, `HOLD_EXPIRED`, ...) are added by the phase that introduces the mechanism they describe. P1-5 added the 5 auth codes §9's own example list doesn't mention (`VALIDATION_ERROR`, `UNAUTHENTICATED`, `FORBIDDEN`, `INVALID_CREDENTIALS`, `EMAIL_TAKEN`, `REFRESH_INVALID`) — §9's list was never meant to be exhaustive, just illustrative of the seat/booking mechanisms it documents. |
 | `seatStates.js` | 🔒⭐ The `SEAT_STATES` constants **and** the legal-transition map. Imported by the server's state-machine guard and the client's colour mapper — one definition, zero drift. |
 | `socketEvents.js` | ⭐ Socket.IO event-name constants. Never a raw string in either codebase. |
-| `schemas/auth.schema.js` | Zod: register, login. |
+| `schemas/auth.schema.js` | Zod: register, login. Registration accepts `role` only as ORGANISER/CUSTOMER at the schema level — `auth.service.js` is what actually refuses to ever grant ADMIN publicly (D-28). |
 | `schemas/venue.schema.js` | Venue, category, bulk seat creation, `layoutMeta` shape. |
 | `schemas/event.schema.js` | Event + show creation, price maps, browse filters. |
 | `schemas/hold.schema.js` | ⭐ Hold request/response including `expiresAt` — drives the client countdown. |
@@ -81,7 +81,7 @@ Plain ESM modules. The point is that a contract exists in exactly one place.
 | `src/db/migrations/004_bookings.sql` | Bookings, booking seats, payments. Also adds the `show_seats.booking_id` foreign key deferred from 003. |
 | `src/db/migrations/005_waitlist.sql` | ⭐ Waitlist entries, offers, and the FIFO index. |
 | `src/db/migrations/006_outbox_audit.sql` | Outbox events, ticket scans, audit log. |
-| `src/db/seed.js` | Demo data: 3 venues, 8 events, 20 shows, **one deliberately sold-out show** with a pre-populated waitlist, plus admin/organiser/customer accounts. Idempotent. Makes the demo instant. |
+| `src/db/seed.js` | Demo data: 3 venues, 8 events, 20 shows, **one deliberately sold-out show** with a pre-populated waitlist, plus admin/organiser/customer accounts. Idempotent. Makes the demo instant. As of P1-7 ("seed skeleton"): just the 3 role accounts, via `ON CONFLICT (email) DO NOTHING` — venues/events/shows are added once their modules exist, Phase 2 onward. |
 
 ### Infrastructure
 
@@ -100,6 +100,7 @@ Plain ESM modules. The point is that a contract exists in exactly one place.
 | `src/mail/templates/bookingConfirmed.ejs` | Ticket email: event details, seats, total, embedded QR. |
 | `src/mail/templates/waitlistOffer.ejs` | ⭐ Offer email: seats reserved, deadline, large Claim button. |
 | `src/db/migrations/007_job_queue.sql` | ⭐ The `job_queue` table and its partial claim index. Header comment explains the `SKIP LOCKED` pattern. |
+| `src/db/migrations/008_refresh_tokens.sql` | Added at P1-5, beyond §4.2's original schema — a hash-based allowlist backing refresh-token rotation and reuse detection. See Decisions Ledger D-27. |
 | `src/mail/templates/bookingCancelled.ejs` | Cancellation + refund summary. |
 | `src/mail/templates/offerExpired.ejs` | Courtesy notice that the window lapsed. |
 
@@ -107,12 +108,12 @@ Plain ESM modules. The point is that a contract exists in exactly one place.
 
 | File | Purpose |
 |---|---|
-| `src/middleware/requireAuth.js` | Verifies the access token from the httpOnly cookie, attaches `req.user`. |
+| `src/middleware/requireAuth.js` | Verifies the access token from the httpOnly cookie, attaches `req.user`. Verified live at P1-6 over real HTTP — see `docs/TESTING.md`. |
 | `src/middleware/requireRole.js` | ⭐ RBAC. `requireRole('ADMIN')`. |
-| `src/middleware/requireOwnership.js` | ⭐ Separate from RBAC: an organiser has the role *and* must own the event. Commonly missed — has its own test. |
+| `src/middleware/requireOwnership.js` | ⭐ Separate from RBAC: an organiser has the role *and* must own the event. Commonly missed — has its own test. As of P1-6: a generic, reusable factory taking a resource loader — no `events` table exists yet, so it was proven against a synthetic resource over temporary routes (added, tested, removed before commit), not a real event. Phase 2's event/show routes wire this up with a real loader. |
 | `src/middleware/validate.js` | Runs a Zod schema against `body`/`query`/`params`, returns 422 with field details. |
 | `src/middleware/idempotency.js` | ⭐ Replay protection via the `bookings.idempotency_key` unique column: on a duplicate-key violation, load and return the original booking instead of erroring. No cache layer needed — the constraint *is* the mechanism. |
-| `src/middleware/errorHandler.js` | 🔒 Last in the chain. Maps domain errors to HTTP status + stable codes; unknown errors become a 500 with a logged correlation id and no stack leak. As of P0-4: only the unknown-error fallback exists (there are no domain error classes to map yet — `server/src/utils/errors.js` arrives with each module that needs one, Phase 1 onward). This file grows with each addition; it doesn't get rewritten. |
+| `src/middleware/errorHandler.js` | 🔒 Last in the chain. Maps domain errors to HTTP status + stable codes; unknown errors become a 500 with a logged correlation id and no stack leak. As of P1-5: checks `instanceof DomainError` and reads `.status`/`.code`/`.message` off it directly; anything else still falls through to the generic 500. This file grows with each addition; it doesn't get rewritten. |
 | `src/middleware/rateLimit.js` | `express-rate-limit` configs: holds 10/min/user, auth 5/min/IP. |
 
 ### Modules
@@ -121,7 +122,7 @@ Each module is four files: `*.routes.js` (router + validation + Swagger JSDoc) �
 
 | Module | Files | Notes |
 |---|---|---|
-| **auth** | `auth.routes.js`, `auth.controller.js`, `auth.service.js`, `auth.queries.js` | argon2 hashing, token issue and rotation, refresh reuse detection. |
+| **auth** | `auth.routes.js`, `auth.controller.js`, `auth.service.js`, `auth.queries.js` | argon2 hashing, token issue and rotation, refresh reuse detection. Rotation and reuse detection verified live at P1-5 against the real DB — two real bugs found and fixed in the process, see Decisions Ledger D-25/D-26 and `docs/TESTING.md`. Backed by `migrations/008_refresh_tokens.sql` (D-27), added beyond §4.2's original schema since reuse detection needs a server-side allowlist, not just a stateless JWT. |
 | **venues** | 4 files | Admin CRUD, categories, bulk seat creation. Layout validation: no duplicate grid coordinates, every seat categorised. |
 | **events** | 4 files | Organiser CRUD + public browse with filters and pagination. |
 | **shows** | 4 files | ⭐ `publishShow()` materialises one `show_seats` row per venue seat in a single batched insert. The moment the seat map comes into existence. |
@@ -159,7 +160,7 @@ Each module is four files: `*.routes.js` (router + validation + Swagger JSDoc) �
 | File | Purpose |
 |---|---|
 | `src/utils/reference.js` | Booking reference generator (`TB-` + Crockford base32, no ambiguous characters). |
-| `src/utils/errors.js` | Domain error classes: `SeatsUnavailableError`, `HoldExpiredError`, `OfferInvalidError`, `IllegalSeatTransitionError`. Each carries its code from `shared/errors.js`. |
+| `src/utils/errors.js` | Domain error classes: `SeatsUnavailableError`, `HoldExpiredError`, `OfferInvalidError`, `IllegalSeatTransitionError`. Each carries its code from `shared/errors.js`. Created at P1-5 with a `DomainError` base class and auth's five error classes (`InvalidCredentialsError`, `EmailTakenError`, `UnauthenticatedError`, `ForbiddenError`, `RefreshInvalidError`) — the Phase 3 seat/booking classes named above arrive with their owning phase, extending this file rather than rewriting it. |
 | `src/utils/logger.js` | `pino` instance with correlation-id support. |
 | `src/utils/asyncRoute.js` | Only needed if you end up on Express 4 — Express 5 forwards async rejections natively. |
 | `src/utils/backoff.js` | Exponential backoff with jitter, shared by the job poller and the outbox handler. |

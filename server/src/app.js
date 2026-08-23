@@ -27,6 +27,7 @@ import { ERROR_CODES } from 'shared/errors.js';
 import { env } from './config/env.js';
 import { mountSwagger } from './config/swagger.js';
 import { healthRouter } from './modules/health/health.routes.js';
+import { authRouter } from './modules/auth/auth.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -50,6 +51,9 @@ app.use(express.json());
 app.use(pinoHttp());
 
 app.use('/health', healthRouter);
+// WHY /api/v1: docs/PROJECT_PROMPT.md §9 bases the whole domain API here (health and the
+// Swagger UI are the two deliberate exceptions, listed outside it in §9 itself).
+app.use('/api/v1/auth', authRouter);
 mountSwagger(app);
 
 // WHY a 404 handler here, before the error handler:

@@ -8,13 +8,16 @@
     "start": "node src/index.js",
     "migrate:up": "node src/db/migrate.js up",
     "migrate:down": "node src/db/migrate.js down",
-    "migrate:reset": "node src/db/migrate.js reset"
+    "migrate:reset": "node src/db/migrate.js reset",
+    "seed": "node src/db/seed.js"
   },
   "dependencies": {
+    "argon2": "^0.45.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
     "node-pg-migrate": "^9.0.0",
     "pg": "^8.23.0",
     "pino": "^10.3.1",
