@@ -381,7 +381,16 @@ CREATE TABLE show_seats (
   state           seat_state_t NOT NULL DEFAULT 'AVAILABLE',
   hold_id         uuid REFERENCES seat_holds(id),
   held_by_user_id uuid REFERENCES users(id),
-  expires_at      timestamptz,                  -- meaningful for HELD and OFFER_RESERVED
+  expires_at      timestamptz,                  -- HELD: hold TTL. OFFER_RESERVED: current
+                                                  -- cascade attempt's deadline, extended on
+                                                  -- each cascade.
+  reserved_until  timestamptz,                  -- OFFER_RESERVED only. Fixed end of the whole
+                                                  -- cascade window, set once on entry, never
+                                                  -- extended. The acquire predicate (§6.1)
+                                                  -- checks THIS for OFFER_RESERVED, not
+                                                  -- expires_at, so a public hold can never win
+                                                  -- a seat while a cascade could still be live.
+                                                  -- See Decisions Ledger D-14.
   booking_id      uuid REFERENCES bookings(id),
   version         int NOT NULL DEFAULT 0,
   updated_at      timestamptz NOT NULL DEFAULT now(),
@@ -560,14 +569,18 @@ UPDATE show_seats s
        hold_id = $3,
        held_by_user_id = $4,
        expires_at = now() + make_interval(secs => $5),
+       reserved_until = NULL,        -- clears any stale OFFER_RESERVED bound; HELD only ever uses expires_at
        version = s.version + 1,
        updated_at = now()
   FROM candidates c
  WHERE s.id = c.id
    AND ( s.state = 'AVAILABLE'
-      OR (s.state IN ('HELD','OFFER_RESERVED') AND s.expires_at <= now()) )
+      OR (s.state = 'HELD'           AND s.expires_at     <= now())
+      OR (s.state = 'OFFER_RESERVED' AND s.reserved_until <= now()) )
 RETURNING s.seat_id;
 ```
+
+**Why `reserved_until`, not `expires_at`, gates the `OFFER_RESERVED` branch (D-14):** the original predicate checked `expires_at`, which is the *current cascade attempt's* deadline — the instant one attempt lapsed, a public hold could snipe the seat mid-cascade, before the next waitlisted user had been offered it. That contradicts §7.2/D-7 (seats never re-enter the public pool during an offer window). `reserved_until` is fixed once, on first entry to `OFFER_RESERVED`, at `now() + (offer_ttl_seconds × WAITLIST_MAX_CASCADE_ATTEMPTS) + 60s` — a hard upper bound on how long *any* legitimate cascade can run (§7.2, §7.4). A public hold can only win the seat once that whole window has passed, by which point no legitimate cascade can still be in flight.
 
 If `result.rowCount !== seatIds.length` → **`ROLLBACK` the whole transaction** and return `409 SEATS_UNAVAILABLE` with the conflicting seat labels so the UI can flash them red. All-or-nothing: never partially hold.
 
@@ -629,6 +642,7 @@ RETURNING id, category_id;
 | Hold expiry with all workers stopped | `GET /shows/:id/seatmap` still reports `AVAILABLE` |
 | 10 waitlisted users racing one offer | 1 conversion, 9 × `410 OFFER_INVALID` |
 | Confirm at `expires_at + 1ms` | `410 HOLD_EXPIRED`, seat not booked |
+| Public `POST /holds` on an `OFFER_RESERVED` seat after its current `expires_at` but before `reserved_until` (D-14) | `409 SEATS_UNAVAILABLE`; seat stays `OFFER_RESERVED`, not reclaimed — proves offer exclusivity survives a stale per-attempt deadline |
 
 Run against a **local `ticket_booking_test` database** — the real Postgres you already have, with tables truncated between tests. Never mock the pool: a mock has no row locks, so a mocked race test proves nothing. Stop the dev server before running these; 4 GB does not stretch to both.
 
@@ -661,7 +675,9 @@ Customer cancels booking
   └─ TX: booking→CANCELLED, payment→REFUNDED, freed seats grouped by category_id
       └─ for each category group:
           ├─ queue empty  → seats → AVAILABLE, broadcast seat.released
-          └─ queue head   → seats → OFFER_RESERVED (expires_at = now + offer_ttl)
+          └─ queue head   → seats → OFFER_RESERVED
+                            expires_at     = now + offer_ttl                              (this attempt's deadline)
+                            reserved_until = now + (offer_ttl × MAX_CASCADE) + 60s grace   (set ONCE, D-14)
                             insert waitlist_offers { token_hash, attempt_no: 1 }
                             entry.status = 'OFFERED'
                             insert outbox_events WAITLIST_OFFER   ← same transaction
@@ -669,7 +685,7 @@ Customer cancels booking
       └─ same TX: pg_notify('seat_changes', ...)  ← fires only if the TX commits
 ```
 
-Seats **never** re-enter the public pool during an offer window. That is the whole point.
+Seats **never** re-enter the public pool during an offer window. That is the whole point — and it's `reserved_until`, not `expires_at`, that the acquire predicate (§6.1) checks to enforce it, because `expires_at` moves on every cascade attempt while `reserved_until` doesn't (D-14).
 
 ### 7.3 The token
 
@@ -694,7 +710,7 @@ SELECT * FROM waitlist_entries
  FOR UPDATE SKIP LOCKED;
 ```
 
-If a next entry exists and `attempt_no < MAX_CASCADE (5)`: reuse the same `OFFER_RESERVED` seats, mint a new token, `attempt_no + 1`, new `expires_at`. Otherwise release the seats to `AVAILABLE` and broadcast.
+If a next entry exists and `attempt_no < MAX_CASCADE (5)`: reuse the same `OFFER_RESERVED` seats, mint a new token, `attempt_no + 1`, new `expires_at = now() + offer_ttl`. **`reserved_until` is never touched after cascade attempt 1** (D-14) — it is the fixed outer bound the whole cascade must finish inside, not a per-attempt deadline, and re-extending it on every cascade would reopen the exact hole D-14 closes. Otherwise (queue drained or `MAX_CASCADE` reached) release the seats to `AVAILABLE`, clearing both `expires_at` and `reserved_until`, and broadcast.
 
 `SKIP LOCKED` stops two concurrent cascades offering to the same person. `MAX_CASCADE` bounds how long seats can be locked behind a queue of inactive users — a bound most people forget. Mention it.
 
@@ -840,6 +856,10 @@ QR_SIGNING_SECRET
 SEAT_HOLD_TTL_SECONDS=600
 WAITLIST_OFFER_TTL_SECONDS=900
 WAITLIST_MAX_CASCADE_ATTEMPTS=5
+# show_seats.reserved_until is NOT its own env var — it's derived once, on entry to
+# OFFER_RESERVED, as now() + (WAITLIST_OFFER_TTL_SECONDS * WAITLIST_MAX_CASCADE_ATTEMPTS) + 60s
+# grace. Raising WAITLIST_MAX_CASCADE_ATTEMPTS lengthens how long a seat can stay off the public
+# market by design — see D-14.
 HOLD_RECONCILER_CRON=*/30 * * * * *
 OUTBOX_RECONCILER_CRON=*/60 * * * * *   # sweeps outbox rows whose job row was lost
 MAX_SEATS_PER_BOOKING=6
