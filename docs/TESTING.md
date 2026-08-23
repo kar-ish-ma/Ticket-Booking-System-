@@ -531,3 +531,75 @@ first-request-wins outcome.
 This re-proves D-35's finding at the full HTTP stack, with the real production rollback (not
 P3-2's throwaway wrapper): `createHold()`'s shortfall check is what turns `acquireSeats()`'s
 per-row partial result into the system-level "loser holds zero" guarantee §6.6 describes.
+
+### P3-4 — `DELETE /api/v1/holds/:id`, idempotent release
+
+Same method as P3-3: a real server, real HTTP, real cookies, the real `ticket_booking` DB. No
+broadcast verification — P3-6 (`pg_notify`/`LISTEN`) is deferred, so `releaseHold()` doesn't call
+it yet; every assertion here is DB-state only.
+
+**Scenario 1 — normal release, then a double and triple release on the same holdId:**
+
+```json
+{
+  "createStatus": 201,
+  "del1": { "status": 200, "body": { "success": true, "data": { "released": 1 } } },
+  "stateAfterDel1": { "state": "AVAILABLE", "hold_id": null, "held_by_user_id": null },
+  "holdRowAfterDel1": { "status": "RELEASED" },
+  "del2": { "status": 200, "body": { "success": true, "data": { "released": 0 } } },
+  "del3": { "status": 200, "body": { "success": true, "data": { "released": 0 } } }
+}
+```
+
+The first `DELETE` frees the seat and marks the `seat_holds` row `RELEASED`. The second and
+third — same holdId, same request — return `200 {released: 0}` both times: no error, no special
+"already released" branch anywhere in the code, just the same two `UPDATE` predicates finding
+nothing left to match.
+
+**Scenario 2 — a non-owner cannot release someone else's hold:**
+
+```json
+{
+  "delByB": { "status": 403, "body": { "error": { "code": "FORBIDDEN", "message": "You do not own this resource" } } },
+  "stateAfter": { "state": "HELD", "hold_id": "776d1b3c-...", "held_by_user_id": "a060bea7-..." }
+}
+```
+
+The seat's state is completely unchanged by the forbidden attempt — `requireOwnership` blocked it
+before `releaseHold()` ever ran.
+
+**Scenario 3 — a nonexistent holdId:**
+
+```json
+{ "status": 404, "body": { "error": { "code": "NOT_FOUND", "message": "Resource not found" } } }
+```
+
+**Scenario 4 — the addition from review: releasing a STALE holdId whose seat was, in between,
+lazily reclaimed under a brand-new hold.** Hold A's `expires_at` is forced into the past directly
+in Postgres (simulating a TTL lapse without waiting); user B then calls the REAL `POST /holds` →
+`createHold()` → `acquireSeats()` path, which genuinely reclaims the seat under a new hold B
+(`createB_status: 201`). Only *then* is A released:
+
+```json
+{
+  "createA_status": 201,
+  "createB_status": 201,
+  "delA": { "status": 200, "body": { "success": true, "data": { "released": 0 } } },
+  "seatStateBeforeStaleRelease": { "state": "HELD", "hold_id": "7c7d851d-...", "held_by_user_id": "b5a13742-..." },
+  "seatStateAfter":               { "state": "HELD", "hold_id": "7c7d851d-...", "held_by_user_id": "b5a13742-..." },
+  "holdA": { "before": { "status": "ACTIVE" }, "after": { "status": "RELEASED" } },
+  "holdB": { "before": { "status": "ACTIVE" }, "after": { "status": "ACTIVE" } }
+}
+```
+
+Four things proven at once: **(a)** `delA` returns `released: 0` — `releaseHoldSeats()`'s
+`hold_id = $1` predicate correctly finds nothing, since the seat's `hold_id` is now B's, not A's.
+**(b)** `seatStateAfter` is byte-for-byte identical to `seatStateBeforeStaleRelease` — B's seat
+was never touched. **(c)** hold A's own `seat_holds` row still correctly transitions
+`ACTIVE → RELEASED` — accurate bookkeeping, since A's hold genuinely is over, just not by an
+explicit release. **(d)** **hold B's `seat_holds` row is `ACTIVE` both before and after** — the
+assertion requested in review. `markSeatHoldReleased(A, ...)` is keyed on `id = $1` (hold A's own
+primary key), never on which seat A used to govern, so it is structurally incapable of touching
+B's row. Had either predicate instead been written as a join through the *current* seat rather
+than the hold's own identity, this scenario is exactly where that bug would surface: B's row
+silently flipped to `RELEASED` while its seat sat there still genuinely held.

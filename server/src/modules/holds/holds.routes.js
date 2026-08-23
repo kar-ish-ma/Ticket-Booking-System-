@@ -1,9 +1,8 @@
 /**
  * holds.routes.js
  *
- * Owns the /holds router. Today (P3-3): POST only. GET /:id and DELETE /:id (explicit release /
- * sendBeacon on tab close) are added by whichever later task actually needs them — most likely
- * P3-4's releaseHold() — rather than stubbed out now.
+ * Owns the /holds router. `POST /` (P3-3) and `DELETE /:id` (P3-4). `GET /:id` is added
+ * whenever a task actually needs to read a hold back rather than just create/release one.
  *
  * No business logic — everything delegates to holds.controller.js.
  */
@@ -12,7 +11,9 @@ import { Router } from 'express';
 import { createHoldSchema } from 'shared/schemas/hold.schema.js';
 import { validate } from '../../middleware/validate.js';
 import { requireAuth } from '../../middleware/requireAuth.js';
+import { requireOwnership } from '../../middleware/requireOwnership.js';
 import * as holdsController from './holds.controller.js';
+import { loadHoldForOwnership } from './holds.service.js';
 
 export const holdsRouter = Router();
 
@@ -47,3 +48,27 @@ export const holdsRouter = Router();
  *         description: More seats requested than MAX_SEATS_PER_BOOKING allows (VALIDATION_ERROR).
  */
 holdsRouter.post('/', requireAuth, validate(createHoldSchema), holdsController.createHold);
+
+/**
+ * @openapi
+ * /api/v1/holds/{id}:
+ *   delete:
+ *     summary: >
+ *       Explicitly release a hold (must own it) — also the target of the client's
+ *       navigator.sendBeacon fast path on tab close (docs/PROJECT_PROMPT.md §5.3). Always
+ *       idempotent: releasing an already-released or already-expired hold is a normal 200, never
+ *       an error.
+ *     tags: [Holds]
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: "{ released: number } — 0 is a normal outcome, not a failure." }
+ *       403: { description: Not this hold's owner (FORBIDDEN). }
+ *       404: { description: No hold with this id (NOT_FOUND). }
+ */
+holdsRouter.delete(
+  '/:id',
+  requireAuth,
+  requireOwnership(loadHoldForOwnership),
+  holdsController.releaseHold
+);

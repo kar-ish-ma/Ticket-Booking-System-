@@ -1,21 +1,27 @@
 /**
  * holds.queries.js
  *
- * Owns the raw SQL for seat acquisition — acquireSeats() is the single most important thing in
- * the codebase, and everything else here exists only to support it: creating the parent
- * `seat_holds` row it references, and looking up seat labels for a 409's conflicting-seats
- * payload.
+ * Owns the raw SQL for seat acquisition AND release — acquireSeats() is the single most
+ * important thing in the codebase; everything else here exists to support it or its inverse:
+ * creating/looking up the parent `seat_holds` row, and releasing a hold's seats back to
+ * AVAILABLE.
  *
  * Does NOT own: hold orchestration (deciding whether a short acquireSeats() result is acceptable
- * or must be rolled back, TTL registration, socket broadcasting — holds.service.js, P3-3+). This
- * file does not decide what "all-or-nothing" means at the service layer — see acquireSeats()'s
- * own doc comment and WALKTHROUGH for exactly what its own contract does and doesn't guarantee.
+ * or must be rolled back; deciding whether a release is idempotent; TTL job-queue registration
+ * P3-5; socket broadcasting P3-6 — all holds.service.js). This file does not decide what
+ * "all-or-nothing" or "idempotent" mean at the service layer — see acquireSeats()'s and
+ * releaseHold()'s own doc comments for exactly what each layer's contract does and doesn't
+ * guarantee.
  *
- * Invariant: every function here takes a `client` — it must already be inside a transaction
- * (see withTransaction.js's header for why calling `pool.query` here instead would silently
- * escape that transaction). The atomic acquire stays ONE SQL statement, always. If this file
- * grows further, extract *around* the acquire query — never split it into a read then a write.
- * That split is the exact bug this entire design exists to prevent (CLAUDE.md).
+ * Invariant: every write function here takes a `client` that must already be inside a
+ * transaction (see withTransaction.js's header for why calling `pool.query` here instead would
+ * silently escape that transaction). `findSeatHoldById` is the one read-only exception — it
+ * accepts a bare `pool` too, for callers with no transaction open yet (e.g.
+ * holds.service.js#loadHoldForOwnership, running from route middleware before any transaction
+ * exists), matching the same `PoolClient | Pool` pattern venues.queries.js and events.queries.js
+ * already use for their own read-only lookups. The atomic acquire stays ONE SQL statement,
+ * always. If this file grows further, extract *around* the acquire query — never split it into a
+ * read then a write. That split is the exact bug this entire design exists to prevent (CLAUDE.md).
  */
 
 /**
@@ -142,4 +148,65 @@ export async function findSeatLabels(client, showId, seatIds) {
     rowLabel: row.row_label,
     seatNumber: row.seat_number,
   }));
+}
+
+/**
+ * Frees every show_seats row still governed by this hold. Keyed on `hold_id = $1 AND state =
+ * 'HELD'`, not on the seats this hold originally acquired — see
+ * holds.service.js#releaseHold's WALKTHROUGH for why that's what makes a release of a STALE
+ * holdId safe against clobbering a seat that's since been reclaimed under a different hold.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} holdId
+ * @returns {Promise<string[]>} seat ids actually released — 0 rows is the normal outcome for an
+ *   already-released or superseded hold, never an error condition
+ */
+export async function releaseHoldSeats(client, holdId) {
+  const result = await client.query(
+    `UPDATE show_seats
+        SET state = 'AVAILABLE', hold_id = NULL, held_by_user_id = NULL,
+            expires_at = NULL, version = version + 1, updated_at = now()
+      WHERE hold_id = $1 AND state = 'HELD'
+     RETURNING seat_id`,
+    [holdId]
+  );
+  return result.rows.map((row) => row.seat_id);
+}
+
+/**
+ * Marks the `seat_holds` row itself released. Keyed on `id = $1` — this row's OWN primary key,
+ * never on which seats it governs — so this can only ever touch hold `$1`'s own bookkeeping row,
+ * regardless of what releaseHoldSeats() above did or didn't find. `status = 'ACTIVE'` in the
+ * WHERE clause is what makes a second call a no-op instead of re-writing an already-terminal row.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} holdId
+ * @param {'RELEASED' | 'EXPIRED'} status
+ * @returns {Promise<boolean>} true if this call is what transitioned the row (false on a
+ *   second/idempotent call, or a holdId that never existed)
+ */
+export async function markSeatHoldReleased(client, holdId, status) {
+  const result = await client.query(
+    `UPDATE seat_holds SET status = $2 WHERE id = $1 AND status = 'ACTIVE' RETURNING id`,
+    [holdId, status]
+  );
+  return result.rowCount > 0;
+}
+
+/**
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {string} holdId
+ * @returns {Promise<{ id: string, showId: string, userId: string, status: string, expiresAt: Date } | null>}
+ */
+export async function findSeatHoldById(client, holdId) {
+  const result = await client.query(`SELECT * FROM seat_holds WHERE id = $1`, [holdId]);
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    showId: row.show_id,
+    userId: row.user_id,
+    status: row.status,
+    expiresAt: row.expires_at,
+  };
 }
