@@ -32,6 +32,13 @@ function mapRefreshTokenRow(row) {
     familyId: row.family_id,
     revokedAt: row.revoked_at,
     expiresAt: row.expires_at,
+    // WHY this is computed in SQL (`expires_at <= now()`) rather than the caller comparing
+    // expiresAt against `new Date()`: CLAUDE.md's invariant is that now() always comes from
+    // Postgres, never the app clock — stated project-wide, not just for the seat-hold TTL
+    // mechanism it was written about. An app-clock comparison here would be wrong under clock
+    // skew between the app server and the DB server in exactly the way the invariant exists to
+    // prevent. Found during the P1 close-phase audit — see Decisions Ledger D-29.
+    isExpired: row.is_expired,
     createdAt: row.created_at,
   };
 }
@@ -90,9 +97,10 @@ export async function insertRefreshToken(client, { userId, tokenHash, familyId, 
  * @returns {Promise<object | null>}
  */
 export async function findRefreshTokenByHash(client, tokenHash) {
-  const result = await client.query(`SELECT * FROM refresh_tokens WHERE token_hash = $1`, [
-    tokenHash,
-  ]);
+  const result = await client.query(
+    `SELECT *, (expires_at <= now()) AS is_expired FROM refresh_tokens WHERE token_hash = $1`,
+    [tokenHash]
+  );
   return mapRefreshTokenRow(result.rows[0]);
 }
 

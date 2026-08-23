@@ -209,7 +209,12 @@ export async function refreshTokens(rawRefreshToken) {
       return { outcome: 'reuse' };
     }
 
-    if (tokenRow.expiresAt <= new Date()) {
+    // WHY tokenRow.isExpired (computed in SQL by findRefreshTokenByHash) instead of comparing
+    // tokenRow.expiresAt against `new Date()` here: now() always comes from Postgres, never the
+    // app clock (CLAUDE.md) — an app-clock comparison would be wrong under clock skew between
+    // this process and the database in exactly the way that invariant exists to prevent. See
+    // Decisions Ledger D-29.
+    if (tokenRow.isExpired) {
       return { outcome: 'expired' };
     }
 
