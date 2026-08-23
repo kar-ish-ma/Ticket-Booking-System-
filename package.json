@@ -1,0 +1,13 @@
+{
+  "name": "ticket-booking-system",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "workspaces": [
+    "server",
+    "client",
+    "shared"
+  ]
+}
