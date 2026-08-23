@@ -43,7 +43,7 @@ Plain ESM modules. The point is that a contract exists in exactly one place.
 | File | Purpose |
 |---|---|
 | `package.json` | Workspace manifest. `name: "shared"`, `type: module`. No dependencies of its own — it's imported by path from `server`/`client`, not installed as a package. |
-| `errors.js` | 🔒 Canonical error-code constants with a comment on each: when it's thrown and what the UI should do. Server throws these; client switches on them. |
+| `errors.js` | 🔒 Canonical error-code constants with a comment on each: when it's thrown and what the UI should do. Server throws these; client switches on them. Created at P0-4 with only the two generic codes (`INTERNAL_ERROR`, `NOT_FOUND`) a bare Express skeleton needs — domain-specific codes (`SEATS_UNAVAILABLE`, `HOLD_EXPIRED`, ...) are added by the phase that introduces the mechanism they describe. |
 | `seatStates.js` | 🔒⭐ The `SEAT_STATES` constants **and** the legal-transition map. Imported by the server's state-machine guard and the client's colour mapper — one definition, zero drift. |
 | `socketEvents.js` | ⭐ Socket.IO event-name constants. Never a raw string in either codebase. |
 | `schemas/auth.schema.js` | Zod: register, login. |
@@ -63,8 +63,8 @@ Plain ESM modules. The point is that a contract exists in exactly one place.
 | File | Purpose |
 |---|---|
 | `package.json` | Workspace manifest. `name: "server"`, `type: module`. Real dependencies (Express, `pg`, etc.) land in P0-4 onward, one task at a time. |
-| `src/index.js` | Entry point. Starts the HTTP server, attaches Socket.IO, starts the job poller and cron reconcilers, opens the `LISTEN` connection, registers graceful-shutdown handlers (in-flight holds must not be orphaned on deploy). |
-| `src/app.js` | Builds the Express app: helmet, CORS with credentials, cookie-parser, `pino-http`, routers, Swagger, error handler last. Exported separately from `index.js` so Supertest can mount it without opening a port. |
+| `src/index.js` | Entry point. Starts the HTTP server, attaches Socket.IO, starts the job poller and cron reconcilers, opens the `LISTEN` connection, registers graceful-shutdown handlers (in-flight holds must not be orphaned on deploy). As of P0-4: just `app.listen()` — Socket.IO (P6-1), the poller (P1-4), `LISTEN` (P3-6) and graceful shutdown (P9-4) are added as each subsystem they'd operate on is built. |
+| `src/app.js` | Builds the Express app: helmet, CORS with credentials, cookie-parser, `pino-http`, routers, Swagger, error handler last. Exported separately from `index.js` so Supertest can mount it without opening a port. Swagger and the full route set land as their owning modules are built; P0-4 wires the skeleton (helmet/CORS/cookies/JSON body/pino-http/health/404/error handler) and proves the error-handler invariant live (a throwaway thrown-error route, added and removed in the same session — see BUILD_LOG P0-4). |
 | `src/config/env.js` | 🔒 Zod-validated environment. Throws at boot on anything missing. Mirrors `.env.example` exactly. |
 | `src/config/swagger.js` | `swagger-jsdoc` setup; scans route files for JSDoc and serves `/api/docs`. |
 
@@ -111,7 +111,7 @@ Plain ESM modules. The point is that a contract exists in exactly one place.
 | `src/middleware/requireOwnership.js` | ⭐ Separate from RBAC: an organiser has the role *and* must own the event. Commonly missed — has its own test. |
 | `src/middleware/validate.js` | Runs a Zod schema against `body`/`query`/`params`, returns 422 with field details. |
 | `src/middleware/idempotency.js` | ⭐ Replay protection via the `bookings.idempotency_key` unique column: on a duplicate-key violation, load and return the original booking instead of erroring. No cache layer needed — the constraint *is* the mechanism. |
-| `src/middleware/errorHandler.js` | 🔒 Last in the chain. Maps domain errors to HTTP status + stable codes; unknown errors become a 500 with a logged correlation id and no stack leak. |
+| `src/middleware/errorHandler.js` | 🔒 Last in the chain. Maps domain errors to HTTP status + stable codes; unknown errors become a 500 with a logged correlation id and no stack leak. As of P0-4: only the unknown-error fallback exists (there are no domain error classes to map yet — `server/src/utils/errors.js` arrives with each module that needs one, Phase 1 onward). This file grows with each addition; it doesn't get rewritten. |
 | `src/middleware/rateLimit.js` | `express-rate-limit` configs: holds 10/min/user, auth 5/min/IP. |
 
 ### Modules
@@ -142,7 +142,7 @@ Each module is four files: `*.routes.js` (router + validation + Swagger JSDoc) �
 | **tickets** | `tickets.routes.js`, `tickets.controller.js`, `tickets.service.js` | ⭐ Signature check → single-use check-in → `ticket_scans` audit row. |
 | **payments** | `payments.service.js` | Mock gateway: authorize / capture / refund. Isolated so a real PSP drops in. |
 | **reports** | 4 files | Organiser revenue, occupancy, waitlist depth, CSV export. |
-| **health** | `health.routes.js` | DB connectivity, pool stats, `job_queue` pending/dead counts, outbox backlog, listener connected. Used by the platform health check. |
+| **health** | `health.routes.js` | DB connectivity, pool stats, `job_queue` pending/dead counts, outbox backlog, listener connected. Used by the platform health check. As of P0-4: liveness only (`{ status: 'ok' }`) — the subsystems it will report on don't exist yet. Full version lands at P9-3. |
 
 ### Realtime
 

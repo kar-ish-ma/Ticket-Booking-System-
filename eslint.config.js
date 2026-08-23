@@ -45,6 +45,13 @@ export default [
       sourceType: 'module',
       globals: nodeGlobals,
     },
+    rules: {
+      // WHY argsIgnorePattern: Express identifies error-handling middleware purely by counting
+      // declared parameters (must be exactly 4: err, req, res, next) — so a terminal error
+      // handler that never calls next() still has to declare it. Prefixing with `_` is how the
+      // rest of the rule (real unused variables are still errors) stays meaningful.
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+    },
   },
   {
     // WHY `contexts` instead of the blanket require-jsdoc default:
