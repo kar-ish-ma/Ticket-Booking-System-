@@ -1,19 +1,21 @@
 /**
  * holds.queries.js
  *
- * Owns the raw SQL for seat acquisition. Its own file because this SQL is the single most
- * important thing in the codebase — it deserves to be read in isolation.
+ * Owns the raw SQL for seat acquisition — acquireSeats() is the single most important thing in
+ * the codebase, and everything else here exists only to support it: creating the parent
+ * `seat_holds` row it references, and looking up seat labels for a 409's conflicting-seats
+ * payload.
  *
- * Does NOT own: hold orchestration, the parent `seat_holds` row, or socket broadcasting
- * (holds.service.js, P3-3). In particular, this file does NOT decide whether a short result is
- * acceptable or must be rolled back — see acquireSeats()'s own doc comment and the WALKTHROUGH
- * below for exactly what "all-or-nothing" does and does not mean at this layer.
+ * Does NOT own: hold orchestration (deciding whether a short acquireSeats() result is acceptable
+ * or must be rolled back, TTL registration, socket broadcasting — holds.service.js, P3-3+). This
+ * file does not decide what "all-or-nothing" means at the service layer — see acquireSeats()'s
+ * own doc comment and WALKTHROUGH for exactly what its own contract does and doesn't guarantee.
  *
  * Invariant: every function here takes a `client` — it must already be inside a transaction
  * (see withTransaction.js's header for why calling `pool.query` here instead would silently
  * escape that transaction). The atomic acquire stays ONE SQL statement, always. If this file
- * grows, extract *around* the acquire query — never split it into a read then a write. That
- * split is the exact bug this entire design exists to prevent (CLAUDE.md).
+ * grows further, extract *around* the acquire query — never split it into a read then a write.
+ * That split is the exact bug this entire design exists to prevent (CLAUDE.md).
  */
 
 /**
@@ -94,4 +96,50 @@ export async function acquireSeats(client, { showId, seatIds, holdId, userId, tt
   );
 
   return result.rows.map((row) => row.seat_id);
+}
+
+/**
+ * Creates the parent `seat_holds` row a hold's `show_seats.hold_id` references. Must run in the
+ * SAME transaction as the acquireSeats() call it precedes — if that transaction later rolls back
+ * (see holds.service.js#createHold's shortfall check), this row is undone along with everything
+ * else, never left orphaned as an ACTIVE hold owning zero seats.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {{ showId: string, userId: string, ttlSeconds: number }} params
+ * @returns {Promise<{ id: string, expiresAt: Date }>}
+ */
+export async function insertSeatHold(client, { showId, userId, ttlSeconds }) {
+  const result = await client.query(
+    `INSERT INTO seat_holds (show_id, user_id, expires_at)
+     VALUES ($1, $2, now() + make_interval(secs => $3))
+     RETURNING id, expires_at`,
+    [showId, userId, ttlSeconds]
+  );
+  return { id: result.rows[0].id, expiresAt: result.rows[0].expires_at };
+}
+
+/**
+ * Looks up row_label/seat_number for a set of seat ids — used to turn the seats acquireSeats()
+ * couldn't get into a human-readable conflicting-seats list for SeatsUnavailableError
+ * (docs/PROJECT_PROMPT.md §6.1: "return 409 SEATS_UNAVAILABLE with the conflicting seat labels
+ * so the UI can flash them red").
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} showId
+ * @param {string[]} seatIds
+ * @returns {Promise<Array<{ seatId: string, rowLabel: string, seatNumber: number }>>}
+ */
+export async function findSeatLabels(client, showId, seatIds) {
+  const result = await client.query(
+    `SELECT s.id AS seat_id, s.row_label, s.seat_number
+       FROM seats s
+       JOIN show_seats ss ON ss.seat_id = s.id
+      WHERE ss.show_id = $1 AND s.id = ANY($2::uuid[])`,
+    [showId, seatIds]
+  );
+  return result.rows.map((row) => ({
+    seatId: row.seat_id,
+    rowLabel: row.row_label,
+    seatNumber: row.seat_number,
+  }));
 }

@@ -47,7 +47,12 @@ export function errorHandler(err, req, res, _next) {
     res.status(err.status).json({
       success: false,
       data: null,
-      error: { code: err.code, message: err.message, details: null },
+      // WHY err.details, not a hardcoded null: some DomainErrors carry structured data the
+      // client needs beyond the message -- e.g. SeatsUnavailableError's conflicting seat labels
+      // (P3-3), so the UI can flash exactly those seats red instead of the whole map. DomainError
+      // defaults `details` to null itself, so an error with nothing extra to say still matches
+      // the envelope's documented shape.
+      error: { code: err.code, message: err.message, details: err.details },
     });
     return;
   }

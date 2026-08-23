@@ -32,6 +32,7 @@ import { venuesRouter } from './modules/venues/venues.routes.js';
 import { eventsRouter } from './modules/events/events.routes.js';
 import { eventShowsRouter, showsRouter } from './modules/shows/shows.routes.js';
 import { seatmapRouter } from './modules/seatmap/seatmap.routes.js';
+import { holdsRouter } from './modules/holds/holds.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -67,6 +68,7 @@ app.use('/api/v1/events', eventsRouter);
 app.use('/api/v1/events/:eventId/shows', eventShowsRouter);
 app.use('/api/v1/shows', showsRouter);
 app.use('/api/v1/shows', seatmapRouter);
+app.use('/api/v1/holds', holdsRouter);
 mountSwagger(app);
 
 // WHY a 404 handler here, before the error handler:

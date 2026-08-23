@@ -458,3 +458,76 @@ RUN 8: winner A? false | winner B? true  | noDeadlock: true | exactlyOneFullWinn
 Both winners occur across the 8 runs (it's a genuine race, not a fixed outcome), zero deadlocks,
 and the final DB state is always exactly one of the two valid configurations — never three seats
 in an inconsistent mix, never a row left `HELD` with no owner.
+
+### P3-3 — `POST /api/v1/holds`, over real HTTP
+
+Everything below is a genuine E2E proof: a real `node server/src/index.js` process, real
+`fetch()` calls from a throwaway Node script (not committed — same pattern as every DB-dependent
+mechanism so far; the permanent Supertest/`testDb.js` harness is still P3-9's job, D-34), real
+cookies from `POST /auth/register`, against the real `ticket_booking` database.
+
+**Scenario A — an available seat:**
+
+```json
+{ "status": 201, "body": { "success": true, "data": {
+  "hold": { "id": "e7b48812-...", "expiresAt": "2026-08-23T21:01:59.571Z" },
+  "seatIds": ["5c605708-...-78d5fd03d326"]
+}, "error": null } }
+```
+
+**Scenario B — one available seat + one already held by someone else (not expired):**
+
+```json
+{
+  "status": 409,
+  "body": {
+    "success": false, "data": null,
+    "error": {
+      "code": "SEATS_UNAVAILABLE",
+      "message": "One or more requested seats are unavailable",
+      "details": { "conflictingSeats": [{ "seatId": "658aae97-...", "rowLabel": "X", "seatNumber": 2 }] }
+    }
+  },
+  "seatHoldsCountBefore": 0,
+  "seatHoldsCountAfter": 0,
+  "x1StateAfter": "AVAILABLE"
+}
+```
+
+`error.details.conflictingSeats` names exactly the one seat that was actually taken — not both
+requested seats, not a generic "unavailable" with no detail. **The addition requested in
+review**: `seatHoldsCountAfter` is `0`, same as before the request — the parent `seat_holds` row
+`createHold()` inserts *before* calling `acquireSeats()` is genuinely gone after the rollback, not
+an orphaned `ACTIVE` hold owning zero seats. And `x1StateAfter` is `AVAILABLE`: the seat that
+*would* have been acquired reverted fully — this is not a "keep what you could get" partial
+success, it's a real all-or-nothing rollback.
+
+**Scenario C — `MAX_SEATS_PER_BOOKING`:**
+
+```json
+{ "status": 422, "body": { "success": false, "data": null,
+  "error": { "code": "VALIDATION_ERROR", "message": "Cannot hold more than 6 seats at once", "details": null } } }
+```
+
+**Scenario D — the overlapping-set race, `{X1,X2}` vs `{X2,X3}`, over real concurrent HTTP
+(`Promise.all`), run 6 times:**
+
+```
+Run 1: A=201 B=409(conflict: seat 2) seat_holds rows=1 | HELD,HELD,AVAILABLE
+Run 2: A=201 B=409(conflict: seat 2) seat_holds rows=1 | HELD,HELD,AVAILABLE
+Run 3: A=201 B=409(conflict: seat 2) seat_holds rows=1 | HELD,HELD,AVAILABLE
+Run 4: A=201 B=409(conflict: seat 2) seat_holds rows=1 | HELD,HELD,AVAILABLE
+Run 5: A=201 B=409(conflict: seat 2) seat_holds rows=1 | HELD,HELD,AVAILABLE
+Run 6: A=409(conflict: seat 2) B=201 seat_holds rows=1 | AVAILABLE,HELD,HELD
+```
+
+Every run: exactly one `201` (always with 2 seats), one `409` (its `conflictingSeats` always
+names seat 2, the contested one — never seat 1 or seat 3, which were never at risk), and
+`seat_holds` row count is **always exactly 1** — never 0 (the winner's row must survive), never 2
+(the loser's row must not). Final DB state is always exactly one of the two valid configurations.
+Run 6 shows B winning instead of A, confirming this is a genuine race and not a fixed
+first-request-wins outcome.
+
+This re-proves D-35's finding at the full HTTP stack, with the real production rollback (not
+P3-2's throwaway wrapper): `createHold()`'s shortfall check is what turns `acquireSeats()`'s
+per-row partial result into the system-level "loser holds zero" guarantee §6.6 describes.

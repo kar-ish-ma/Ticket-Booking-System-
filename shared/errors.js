@@ -79,4 +79,11 @@ export const ERROR_CODES = Object.freeze({
   // instead of its EFFECTIVE state — see seatState.machine.js's header on lazy expiry). The UI
   // has no specific recovery for this; treat it like INTERNAL_ERROR and surface a generic retry.
   ILLEGAL_SEAT_TRANSITION: 'ILLEGAL_SEAT_TRANSITION',
+
+  // Thrown by POST /holds when one or more requested seats couldn't be acquired — already HELD
+  // by someone else and not expired, BOOKED, or OFFER_RESERVED within its reserved_until window
+  // (D-14). All-or-nothing: if ANY requested seat is unavailable, the WHOLE request fails and no
+  // seat is held (holds.service.js#createHold). error.details carries the conflicting seats'
+  // labels so the UI can flash exactly those red, per docs/PROJECT_PROMPT.md §6.1.
+  SEATS_UNAVAILABLE: 'SEATS_UNAVAILABLE',
 });

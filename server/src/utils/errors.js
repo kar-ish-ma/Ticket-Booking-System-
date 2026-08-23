@@ -22,13 +22,17 @@ import { ERROR_CODES } from 'shared/errors.js';
 export class DomainError extends Error {
   /**
    * @param {string} message
-   * @param {{ status: number, code: string }} options
+   * @param {{ status: number, code: string, details?: unknown }} options - `details` is
+   *   whatever structured data the error needs the client to see beyond the message (e.g.
+   *   SeatsUnavailableError's conflicting seat labels). Defaults to null, matching the response
+   *   envelope's `error.details` shape when there's nothing extra to say.
    */
-  constructor(message, { status, code }) {
+  constructor(message, { status, code, details = null }) {
     super(message);
     this.name = this.constructor.name;
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -44,6 +48,19 @@ export class InvalidCredentialsError extends DomainError {
 export class EmailTakenError extends DomainError {
   constructor() {
     super('Email is already registered', { status: 409, code: ERROR_CODES.EMAIL_TAKEN });
+  }
+}
+
+// WHY this exists as a reusable class rather than validate.js's inline 422 response: validate.js
+// only ever sees a request BEFORE it reaches a service, so it can't enforce a rule that needs
+// server-only config (env) or a DB lookup. holds.service.js#createHold's MAX_SEATS_PER_BOOKING
+// cap is exactly that case -- shared/schemas/hold.schema.js can't read env, so the cap is
+// enforced here instead. Any future service-layer check with the same shape (right request
+// shape, but a business rule beyond what a shared Zod schema alone can express) reuses this
+// rather than each inventing its own 422.
+export class ValidationError extends DomainError {
+  constructor(message) {
+    super(message, { status: 422, code: ERROR_CODES.VALIDATION_ERROR });
   }
 }
 
@@ -92,5 +109,20 @@ export class ConflictError extends DomainError {
 export class IllegalSeatTransitionError extends DomainError {
   constructor(message = 'Illegal seat state transition') {
     super(message, { status: 409, code: ERROR_CODES.ILLEGAL_SEAT_TRANSITION });
+  }
+}
+
+/**
+ * @param {Array<{ seatId: string, rowLabel: string, seatNumber: number }>} conflictingSeats -
+ *   the requested seats that could NOT be acquired, so the UI can flash exactly those red
+ *   (docs/PROJECT_PROMPT.md §6.1) instead of the whole map or nothing.
+ */
+export class SeatsUnavailableError extends DomainError {
+  constructor(conflictingSeats) {
+    super('One or more requested seats are unavailable', {
+      status: 409,
+      code: ERROR_CODES.SEATS_UNAVAILABLE,
+      details: { conflictingSeats },
+    });
   }
 }
