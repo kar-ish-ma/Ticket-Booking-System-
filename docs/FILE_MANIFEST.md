@@ -257,7 +257,7 @@ Each module is four files: `*.routes.js` (router + validation + Swagger JSDoc) �
 | `SEQUENCE_DIAGRAMS.md` | ⭐ Mermaid: hold→book, TTL expiry across three layers, cancel→offer→cascade. Diagrams are what people remember. |
 | `ARCHITECTURE.md` | Component diagram, request lifecycle, scaling notes. |
 | `TESTING.md` | How to create `ticket_booking_test`, run the concurrency suite, and read its output. **Notes that the dev server must be stopped first** — 4 GB does not stretch to both. |
-| `DEPLOYMENT.md` | Render/Railway (API + managed Postgres) and Vercel/Netlify (client). One database, no Redis add-on, no Dockerfile needed — the platforms detect Node and build from `package.json`. |
+| `DEPLOYMENT.md` | Local environment reproduction (Postgres install, database creation, `postgresql.conf` tuning for 4GB, `DATABASE_URL`) — written at P0-3. Production section (Render/Railway for the API + managed Postgres, Vercel/Netlify for the client; one database, no Redis add-on, no Dockerfile needed) lands at P10-6. |
 
 ---
 
