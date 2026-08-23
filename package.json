@@ -11,6 +11,7 @@
     "shared"
   ],
   "scripts": {
+    "dev:server": "npm run dev --workspace=server",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
