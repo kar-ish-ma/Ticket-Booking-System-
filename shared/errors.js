@@ -68,4 +68,15 @@ export const ERROR_CODES = Object.freeze({
   // scored mechanism; see "Phase 2 debt" in docs/BUILD_LOG.md. The UI should show "already
   // exists" / "already done" and let the user adjust the conflicting field.
   CONFLICT: 'CONFLICT',
+
+  // Thrown by seatState.machine.js#assertTransition() when a service attempts a
+  // (fromState, toState) pair that isn't in shared/seatStates.js's SEAT_TRANSITIONS map. Unlike
+  // SEATS_UNAVAILABLE (§6.1) — which is an EXPECTED outcome of normal concurrent contention —
+  // this represents an application-level invariant violation: correct code should never
+  // construct an illegal transition, because the DB predicates that actually perform state
+  // changes are themselves derived from this same map. Reaching a client at all means something
+  // upstream computed the wrong `fromState` (most likely: passed a seat's raw stored state
+  // instead of its EFFECTIVE state — see seatState.machine.js's header on lazy expiry). The UI
+  // has no specific recovery for this; treat it like INTERNAL_ERROR and surface a generic retry.
+  ILLEGAL_SEAT_TRANSITION: 'ILLEGAL_SEAT_TRANSITION',
 });

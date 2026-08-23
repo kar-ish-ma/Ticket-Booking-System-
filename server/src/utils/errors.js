@@ -79,3 +79,18 @@ export class ConflictError extends DomainError {
     super(message, { status: 409, code: ERROR_CODES.CONFLICT });
   }
 }
+
+// WHY status 409, not 500, even though this represents an internal invariant violation rather
+// than expected client-facing contention (see shared/errors.js's ILLEGAL_SEAT_TRANSITION
+// comment): docs/PROJECT_PROMPT.md §4.3/§9 name this error but never pin a status, so it's a real
+// judgment call — logged as Decisions Ledger D-33. 409 groups it with SEATS_UNAVAILABLE/
+// OFFER_INVALID in the "this resource's state conflicts with the request" family, which is what
+// it IS from an HTTP-semantics standpoint even though it should never actually fire in correct
+// code. 500 would mislabel it as "the server broke," which overstates it — nothing crashed,
+// something upstream just computed the wrong `fromState`. Either was defensible; 409 read as the
+// more honest description of what happened.
+export class IllegalSeatTransitionError extends DomainError {
+  constructor(message = 'Illegal seat state transition') {
+    super(message, { status: 409, code: ERROR_CODES.ILLEGAL_SEAT_TRANSITION });
+  }
+}
