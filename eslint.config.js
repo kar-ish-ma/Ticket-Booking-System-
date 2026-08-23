@@ -73,7 +73,11 @@ export default [
       'jsdoc/require-param': 'warn',
       'jsdoc/require-returns': 'warn',
       'jsdoc/check-param-names': 'warn',
-      'jsdoc/check-tag-names': 'warn',
+      // WHY definedTags: @openapi isn't standard JSDoc -- it's swagger-jsdoc's convention for
+      // marking a block as an OpenAPI path definition (server/src/config/swagger.js scans for
+      // it). Without this, every annotated route fails lint for using the exact tag the docs
+      // pipeline requires.
+      'jsdoc/check-tag-names': ['warn', { definedTags: ['openapi'] }],
     },
   },
   prettierConfig,

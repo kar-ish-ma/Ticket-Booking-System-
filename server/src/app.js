@@ -25,6 +25,7 @@ import pinoHttp from 'pino-http';
 
 import { ERROR_CODES } from 'shared/errors.js';
 import { env } from './config/env.js';
+import { mountSwagger } from './config/swagger.js';
 import { healthRouter } from './modules/health/health.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -49,6 +50,7 @@ app.use(express.json());
 app.use(pinoHttp());
 
 app.use('/health', healthRouter);
+mountSwagger(app);
 
 // WHY a 404 handler here, before the error handler:
 // A route that simply doesn't exist doesn't throw — Express falls through every app.use() that
