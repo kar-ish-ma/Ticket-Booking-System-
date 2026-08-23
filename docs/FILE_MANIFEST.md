@@ -32,7 +32,7 @@
 
 | File | Purpose |
 |---|---|
-| `ci.yml` | On push/PR: install → lint → unit → e2e against GitHub's Postgres **service container**. (CI runs on GitHub's Linux runners, so containers are fine there — they never run on the dev machine.) **The concurrency suite runs here** — visible green CI is part of the pitch. |
+| `ci.yml` | On push/PR: install → lint → unit → e2e against GitHub's Postgres **service container**. (CI runs on GitHub's Linux runners, so containers are fine there — they never run on the dev machine.) **The concurrency suite runs here** — visible green CI is part of the pitch. As of P0-7: the Postgres service and `DATABASE_URL`/JWT secrets are live (plain fake values inline, not GitHub Secrets — see D-20, a fork or clone must go green without needing repo-secret setup), but `npm test --if-present` has nothing to run until Phase 1+ adds a test script and real tests. |
 
 ---
 
