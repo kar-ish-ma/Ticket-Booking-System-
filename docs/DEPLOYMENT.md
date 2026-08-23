@@ -96,8 +96,10 @@ with the password you set in step 1.
 DATABASE_URL=postgresql://postgres:<your-password>@localhost:5432/ticket_booking
 ```
 
-This goes in `server/.env`, created from `server/.env.example` (added in P0-5). Never commit
-`.env` — it's excluded by `.gitignore`.
+This goes in `.env` at the **repo root**, created from `.env.example` (added in P0-5) — not
+`server/.env`. `server/src/config/env.js` loads it from there, since there's currently only one
+thing in this monorepo that needs environment variables; a separate `client/.env` for Vite's own
+`VITE_*`-prefixed vars is a P7-1 concern. Never commit `.env` — it's excluded by `.gitignore`.
 
 ### 6. Install dependencies
 

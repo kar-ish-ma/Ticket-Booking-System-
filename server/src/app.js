@@ -24,6 +24,7 @@ import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
 
 import { ERROR_CODES } from 'shared/errors.js';
+import { env } from './config/env.js';
 import { healthRouter } from './modules/health/health.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -33,14 +34,12 @@ app.use(helmet());
 
 app.use(
   cors({
-    // WHY a concrete fallback instead of `origin: true` (reflect any origin):
-    // `origin: true` works with `credentials: true` too, but it accepts every caller. A fixed
-    // default matching Vite's dev port is only marginally more restrictive right now — nothing
-    // is protected by a cookie yet (P1-5) — but it means this line doesn't have to be revisited
-    // for correctness once auth exists, only pointed at the real WEB_URL.
-    // process.env read directly rather than through validated config because Zod env validation
-    // doesn't exist yet — that's P0-5. Bootstrapping order, not a shortcut left in place.
-    origin: process.env.WEB_URL ?? 'http://localhost:5173',
+    // WHY a concrete origin instead of `origin: true` (reflect any origin):
+    // `origin: true` works with `credentials: true` too, but it accepts every caller. Reading
+    // the validated WEB_URL means the allowed origin can never silently diverge from what
+    // env.js already confirmed is configured — get it wrong and the server refuses to boot
+    // (P0-5), rather than serving with a CORS policy nobody checked.
+    origin: env.WEB_URL,
     credentials: true, // httpOnly auth cookies (P1-5) require this
   })
 );
