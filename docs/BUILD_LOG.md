@@ -353,7 +353,7 @@ Tag every phase completion so a reviewer can inspect clean states.
 | Phase | Branch | Merged to `main` | Tag | Notes |
 |---|---|---|---|---|
 | 0 | `phase/0-foundation` | ✅ | `v0.1.0-phase0` | `/close-phase 0` returned CLEAR on the second pass (2026-08-23); fast-forward merged to `main`, tagged, both pushed |
-| 1 | `phase/1-db-auth` | ⬜ | `v0.2.0-phase1` | |
+| 1 | `phase/1-db-auth` | ✅ | `v0.2.0-phase1` | `/close-phase 1` CLEAR on the second pass (2026-08-24, after fixing D-29); fast-forward merged to `main`, tagged, both pushed |
 | 2 | `phase/2-venues-shows` | ⬜ | `v0.2.5-phase2` | |
 | 3 | `phase/3-holds-concurrency` | ⬜ | `v0.3.0-phase3` | ⭐ scored |
 | 4 | `phase/4-booking-qr` | ⬜ | `v0.4.0-phase4` | |
