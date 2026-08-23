@@ -20,7 +20,9 @@
 | `.env.example` | 🔒 Every variable, commented with what it controls and what breaks if it's wrong. Must match `server/src/config/env.js`. |
 | `package.json` | npm workspaces root (`server`, `client`, `shared`). Scripts: `dev`, `lint`, `test`, `test:concurrency`, `db:migrate`, `db:seed`. |
 | `jsconfig.json` | `checkJs: true` — gives editor type-checking from JSDoc without a build step. |
-| `.eslintrc.json` | ESLint flat config, `eslint-plugin-jsdoc` on so missing docblocks are lint errors. |
+| `eslint.config.js` | ESLint flat config (ESLint 9+ default; not `.eslintrc.json` — that filename is the legacy format and wouldn't apply under a flat-config ESLint version). `eslint-plugin-jsdoc` on for `server/src/**` and `shared/**` so missing docblocks on exported functions are lint warnings; `eslint-config-prettier` last in the array so style rules never fight Prettier. |
+| `.prettierrc.json` | Prettier formatting rules (single quotes, semicolons, 100-col, LF). |
+| `.prettierignore` | Excludes `docs/` and other `.md` — hand-formatted tables and prose shouldn't get reflowed. |
 | `.gitignore` | Excludes `node_modules`, `.env`, `dist`, coverage. |
 | `docs/` | See bottom of this file. |
 
