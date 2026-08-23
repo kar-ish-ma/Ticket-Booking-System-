@@ -332,3 +332,129 @@ expression in `seatmap.queries.js#getEffectiveSeatMap`:
 fresh on every read, is the entirety of Layer 1 — no scheduler, no cron, no job queue involved,
 because none of those exist yet. The row was reset to `AVAILABLE`/`NULL` immediately after this
 proof so Phase 3 starts from a clean seat map.
+
+## Phase 3: seat holds, TTL, concurrency (P3-1, P3-2)
+
+### P3-1 — full transition matrix (Vitest)
+
+```
+Test Files  1 passed (1)
+     Tests  31 passed (31)
+```
+
+25 pairs (5×5), 2 unrecognised-state cases, 4 immutability cases — full output in the P3-1
+commit's own BUILD_LOG row. Falsified live: deleting the `OFFER_RESERVED → OFFER_RESERVED`
+cascade entry from `SEAT_TRANSITIONS` broke exactly one test (that pair), nothing else.
+
+### P3-2 — `acquireSeats()`, the atomic hold acquisition
+
+No Vitest-DB harness exists yet (`tests/setup/testDb.js` is explicitly P3-9's job — see Decisions
+Ledger D-34), so this was proven with a throwaway Node script run directly against the real
+`ticket_booking` database, then deleted before committing — same pattern Phases 0–2 used for
+every DB-dependent mechanism. Each scenario below seeds its own isolated `show_seats` row(s) so
+none of them can interfere with each other.
+
+**Scenarios 1–6 — the single-statement predicate, one case at a time:**
+
+```json
+{
+  "scenario1_available_acquired": ["6a933956-...-f8ec7489a010"],
+  "scenario2_heldNotExpired_rejected": [],
+  "scenario3_heldExpired_reclaimed": ["a28792fa-...-3127caddeb64"],
+  "scenario4_offerReserved_beforeReservedUntil_rejected_D14": [],
+  "scenario5_offerReserved_afterReservedUntil_reclaimed_D14": ["e66a5cf2-...-0b17898ce838"],
+  "scenario6_multiSeat_partial_oneAvailableOneHeld": ["76a0fd38-...-a7bf8d0cffe3"]
+}
+```
+
+Scenario 2 (seat already `HELD`, not expired) and scenario 4 (seat `OFFER_RESERVED`, its current
+cascade attempt's `expires_at` already past but `reserved_until` still in the future) both come
+back as empty arrays — the acquire predicate correctly refuses both. **Scenario 4 is the literal
+D-14 check**: it proves the predicate gates on `reserved_until`, not `expires_at`, for
+`OFFER_RESERVED` — a public hold cannot snipe a seat mid-cascade just because one attempt lapsed.
+Scenario 5 (both timestamps past) correctly reclaims it. Scenario 6 — a 2-seat request where only
+one seat is actually acquirable — returns a 1-element array, not an exception and not an empty
+array: `acquireSeats()` signals partial success by array length, exactly as its own JSDoc
+promises (`@throws never`).
+
+**Scenario 7 — a genuine 2-way race on ONE seat, via `Promise.all`:**
+
+```json
+{
+  "userA_result": ["a614615f-...-7c6976fa0977"],
+  "userB_result": []
+}
+```
+
+Exactly one winner, one empty loser, every run — the ordinary single-seat race case §6.6 also
+covers (at small scale here; the full 50-parallel version is P3-9's).
+
+**Scenario 8 — the one only `ORDER BY seat_id` can prevent: an overlapping-set race.**
+
+A single-seat race can't exercise lock ordering at all (both transactions want the same one
+lock). `{X1,X2}` vs `{X2,X3}` — sharing X2 — is the smallest case that can, and if the ordering
+were wrong, the failure mode is a Postgres deadlock error (`40P01`), not merely a wrong result —
+which is exactly why this is worth proving here, in isolation, rather than waiting for it to
+possibly show up buried inside P3-9's 50-parallel suite.
+
+Each racer is wrapped in a **throwaway** "simulate P3-3" transaction — `BEGIN` → `acquireSeats()`
+→ roll back on any shortfall, else commit. This wrapper is proof-script scaffolding only, deleted
+with the rest of the script; `holds.service.js#createHold` (P3-3) is where this logic is actually
+built as production code.
+
+One representative run:
+
+```json
+{
+  "requestedByA": ["X1", "X2"],
+  "requestedByB": ["X2", "X3"],
+  "resultA": {
+    "rawAcquiredByThisStatement": ["c0e28e99-...", "dfed6e26-..."],
+    "effectiveResultAfterRollback": ["c0e28e99-...", "dfed6e26-..."],
+    "rolledBack": false
+  },
+  "resultB": {
+    "rawAcquiredByThisStatement": ["0e3156a2-..."],
+    "effectiveResultAfterRollback": [],
+    "rolledBack": true
+  }
+}
+```
+
+**This is the finding behind Decisions Ledger D-35.** B's *raw* `acquireSeats()` call did not
+come back empty — it came back with one seat (X3, the one nobody else wanted). B lost only the
+contested seat (X2); the function has no way to know, and no contract to decide, that B's overall
+*request* should therefore fail. Only the wrapper — noticing `1 seat acquired < 2 requested` —
+rolls the whole transaction back, and only *then* does B's effective result become the empty
+array §6.6 describes. `acquireSeats()`'s real, narrower contract is "exactly which rows this
+statement legally touched"; "the loser holds zero" is an emergent property of the caller's
+transaction discipline, not of this function alone.
+
+Final DB state after that same run, queried fresh (not from the transaction that wrote it):
+
+```json
+[
+  { "seat_number": 1, "state": "HELD", "held_by_a": true,  "held_by_b": false },
+  { "seat_number": 2, "state": "HELD", "held_by_a": true,  "held_by_b": false },
+  { "seat_number": 3, "state": "AVAILABLE", "held_by_a": null, "held_by_b": null }
+]
+```
+
+A won both seats it asked for; B's tentative claim on X3 was fully undone by its rollback — X3 is
+back to `AVAILABLE`, not stuck `HELD` with no owner. **Run 8 times** to rule out a lucky single
+result:
+
+```
+RUN 1: winner A? true  | winner B? false | noDeadlock: true | exactlyOneFullWinner: true | HELD,HELD,AVAILABLE
+RUN 2: winner A? false | winner B? true  | noDeadlock: true | exactlyOneFullWinner: true | AVAILABLE,HELD,HELD
+RUN 3: winner A? false | winner B? true  | noDeadlock: true | exactlyOneFullWinner: true | AVAILABLE,HELD,HELD
+RUN 4: winner A? true  | winner B? false | noDeadlock: true | exactlyOneFullWinner: true | HELD,HELD,AVAILABLE
+RUN 5: winner A? true  | winner B? false | noDeadlock: true | exactlyOneFullWinner: true | HELD,HELD,AVAILABLE
+RUN 6: winner A? true  | winner B? false | noDeadlock: true | exactlyOneFullWinner: true | HELD,HELD,AVAILABLE
+RUN 7: winner A? true  | winner B? false | noDeadlock: true | exactlyOneFullWinner: true | HELD,HELD,AVAILABLE
+RUN 8: winner A? false | winner B? true  | noDeadlock: true | exactlyOneFullWinner: true | AVAILABLE,HELD,HELD
+```
+
+Both winners occur across the 8 runs (it's a genuine race, not a fixed outcome), zero deadlocks,
+and the final DB state is always exactly one of the two valid configurations — never three seats
+in an inconsistent mix, never a row left `HELD` with no owner.
