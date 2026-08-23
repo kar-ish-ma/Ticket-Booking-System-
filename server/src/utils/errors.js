@@ -64,3 +64,18 @@ export class RefreshInvalidError extends DomainError {
     super(message, { status: 401, code: ERROR_CODES.REFRESH_INVALID });
   }
 }
+
+// WHY these two are generic (reusable across venues/events/shows) instead of one class per
+// resource: Phase 2 is CRUD scaffolding, not a scored mechanism — see shared/errors.js's
+// CONFLICT comment and "Phase 2 debt" in docs/BUILD_LOG.md.
+export class NotFoundError extends DomainError {
+  constructor(message = 'Resource not found') {
+    super(message, { status: 404, code: ERROR_CODES.NOT_FOUND });
+  }
+}
+
+export class ConflictError extends DomainError {
+  constructor(message = 'Resource already exists or conflicts with existing data') {
+    super(message, { status: 409, code: ERROR_CODES.CONFLICT });
+  }
+}

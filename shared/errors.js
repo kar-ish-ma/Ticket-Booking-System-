@@ -60,4 +60,12 @@ export const ERROR_CODES = Object.freeze({
   // detected case, where the whole token family gets revoked). The UI should treat this exactly
   // like UNAUTHENTICATED: clear local session state and redirect to login.
   REFRESH_INVALID: 'REFRESH_INVALID',
+
+  // Thrown by Phase 2's venue/event/show CRUD on a unique-constraint violation or an invalid
+  // state transition surfaced as a conflict (duplicate category name, duplicate seat grid
+  // coordinate, publishing a show that's already published, ...). Deliberately one generic code
+  // rather than one per resource — Phase 2 is CRUD scaffolding for Phase 3 to sit on, not a
+  // scored mechanism; see "Phase 2 debt" in docs/BUILD_LOG.md. The UI should show "already
+  // exists" / "already done" and let the user adjust the conflicting field.
+  CONFLICT: 'CONFLICT',
 });

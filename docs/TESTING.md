@@ -170,3 +170,165 @@ wire up, not a mock of it:
 All five outcomes match the middleware chain's design exactly: no session fails auth before role
 is even checked; the right role with the wrong resource still fails; the right role with the
 right resource succeeds.
+
+## Phase 2: venues, events, shows, seat map (P2-1 to P2-7)
+
+No Vitest harness exists yet (still P3-9's job), so every mechanism below was proven live against
+the real `ticket_booking` database and a real running server (`node server/src/index.js`), driven
+with `curl` and short one-off Postgres probe scripts. Full request/response bodies, not summaries.
+
+### Category and seat-grid conflicts (P2-2, P2-3)
+
+```
+--- create category Standard --- 201, category returned
+--- create category Premium  --- 201, category returned
+--- duplicate category name (re-POST "Standard") ---
+{"success":false,"data":null,"error":{"code":"CONFLICT","message":"A category named \"Standard\" already exists for this venue","details":null}}
+HTTP 409
+
+--- bulk create seats: row A (Premium x5), row B (Standard x5) --- 201, 10 seats returned
+--- colliding grid coords: row C at gridRow:1 (already used by row A) ---
+{"success":false,"data":null,"error":{"code":"CONFLICT","message":"One or more seats collide with an existing seat number or grid position","details":null}}
+HTTP 409
+```
+
+The colliding request wrote zero seats — `venues.service.js#bulkCreateSeats` wraps the whole
+`unnest()` insert in `withTransaction`, so the constraint violation on row C rolled the entire
+call back, not just the offending row.
+
+### Show creation, ownership, and publish (P2-4, P2-5, P2-6)
+
+```
+--- organiser creates event --- 201
+--- admin tries POST /events (role-gated to ORGANISER) ---
+{"success":false,"data":null,"error":{"code":"FORBIDDEN","message":"You do not have access to this resource","details":null}}
+HTTP 403
+
+--- second organiser PATCHes the first organiser's event ---
+{"success":false,"data":null,"error":{"code":"FORBIDDEN","message":"You do not own this resource","details":null}}
+HTTP 403
+
+--- create show with 2 category prices, holdTtlSeconds/offerTtlSeconds omitted --- 201
+  "holdTtlSeconds":600,"offerTtlSeconds":900   <- DB column defaults applied correctly (post D-30 fix)
+
+--- admin (not the event's organiser) tries POST /shows/:id/publish ---
+{"success":false,"data":null,"error":{"code":"FORBIDDEN","message":"You do not have access to this resource","details":null}}
+HTTP 403
+
+--- organiser publishes the show ---
+{"success":true,"data":{"show":{...,"status":"SCHEDULED"},"seatCount":10},"error":null}
+
+--- organiser publishes the SAME show again ---
+{"success":false,"data":null,"error":{"code":"CONFLICT","message":"This show has already been published","details":null}}
+HTTP 409
+
+--- create show under a nonexistent eventId ---
+{"success":false,"data":null,"error":{"code":"NOT_FOUND","message":"Resource not found","details":null}}
+HTTP 404
+```
+
+`seatCount: 10` matches the 10 seats created in the bulk-seat step exactly — one `show_seats` row
+per active venue seat, all defaulting to `AVAILABLE`, from the single `INSERT ... SELECT` in
+`shows.queries.js#materialiseShowSeats`.
+
+### Browse filters and the PATCH data-corruption bug (P2-4, D-31, D-32)
+
+Two real bugs were caught here, not just filter combinations exercised:
+
+```
+--- GET /events?type=MOVIE&city=Testville (before any fix) ---
+{"success":false,"data":null,"error":{"code":"INTERNAL_ERROR", ...}}
+   server log: TypeError: Cannot set property query of #<IncomingMessage> which has only a getter
+   (Express 5's req.query has no setter — see D-31)
+
+--- after fixing validate.js (Object.defineProperty for the query source) ---
+--- GET /events?type=MOVIE&city=Testville --- 200, our event returned, total: 1
+--- GET /events?city=Nowhere              --- 200, events: [], total: 0
+--- GET /events?q=Nonexistent             --- 200, events: [], total: 0
+--- GET /events?page=notanumber ---
+{"success":false,"data":null,"error":{"code":"VALIDATION_ERROR","message":"Invalid request",
+ "details":[{"code":"invalid_type","expected":"number","received":"NaN","path":["page"], ...}]}}
+HTTP 422
+
+--- PATCH /events/:id { isPublished: true } only, on an event created with description:"A test film" ---
+--- GET /events/:id afterward: description is now "" ---
+   (updateEventSchema = createEventSchema.partial() still carried description's .default('') —
+    see D-32. Fixed by hand-writing updateEventSchema with no field carrying .default().)
+
+--- after the fix: PATCH { isPublished: false } (again omitting every other field) ---
+--- GET /events/:id afterward: title "Test Movie", type "MOVIE", durationMin 120 all UNCHANGED ---
+   (description stays "" from the earlier corruption — pre-existing test data, not a new bug;
+    the fix is proven by the fields that were never mentioned in either PATCH surviving intact.)
+```
+
+### P2-7: seatmap effective state — the lazy-expiry proof
+
+The core claim (§5.1 of `docs/PROJECT_PROMPT.md`): a hold is expired because the clock says so,
+not because a worker said so. Phase 3 doesn't exist yet — no poller, no cron reconciler, nothing
+that could flip a stale row back to `AVAILABLE` on its own. This proof forces a `show_seats` row
+into a state Layer 2/3 would normally clean up, then reads it through nothing but the effective-
+state SQL in `seatmap.queries.js`, with no worker anywhere in the process.
+
+**Step 1 — force one seat into a stale HELD state, directly in Postgres, and prove the write:**
+
+```
+--- BEFORE manual UPDATE ---
+{
+  "id": "66ca43bb-0c01-48d3-9536-c89c05e7cb9a",
+  "state": "AVAILABLE",
+  "expires_at": null,
+  "db_now": "2026-08-23T19:52:14.285Z"
+}
+--- RAW SQL UPDATE RESULT ---
+-- UPDATE show_seats SET state = 'HELD', expires_at = now() - interval '1 hour', ...
+-- RETURNING id, state, expires_at, (expires_at <= now()) AS is_past
+rowCount: 1
+{
+  "id": "66ca43bb-0c01-48d3-9536-c89c05e7cb9a",
+  "state": "HELD",
+  "expires_at": "2026-08-23T18:52:14.296Z",
+  "is_past": true
+}
+```
+
+**Step 2 — read the seat map over real HTTP, no auth, nothing but the running server:**
+
+```
+GET /api/v1/shows/492b94a9-198a-4bbd-8dba-9af351824a30/seatmap
+
+{
+  "showSeatId": "66ca43bb-0c01-48d3-9536-c89c05e7cb9a",
+  "seatId": "d011fd64-3e9f-452c-8ec7-03f956c042c0",
+  "categoryId": "ba63104a-0bc2-45cb-9cb4-2425167f6cc1",
+  "rowLabel": "A",
+  "seatNumber": 1,
+  "gridRow": 1,
+  "gridCol": 0,
+  "isAccessible": false,
+  "state": "AVAILABLE",
+  "categoryName": "Premium",
+  "categoryColorHex": "#f59e0b",
+  "priceCents": 1500
+}
+```
+
+**Step 3 — re-query the raw row AFTER the HTTP call, to rule out anything else having touched it:**
+
+```
+--- RAW STORED ROW, queried AFTER the seatmap GET above ---
+{
+  "id": "66ca43bb-0c01-48d3-9536-c89c05e7cb9a",
+  "state": "HELD",
+  "expires_at": "2026-08-23T18:52:14.296Z",
+  "db_now": "2026-08-23T19:52:33.708Z",
+  "is_past": true
+}
+```
+
+The row is still, genuinely, stored as `HELD` with `expires_at` in the past — nothing rewrote it.
+The API nonetheless reported `AVAILABLE`. The only code path that could produce that is the `CASE`
+expression in `seatmap.queries.js#getEffectiveSeatMap`:
+`WHEN ss.state = 'HELD' AND ss.expires_at <= now() THEN 'AVAILABLE'`. That predicate, evaluated
+fresh on every read, is the entirety of Layer 1 — no scheduler, no cron, no job queue involved,
+because none of those exist yet. The row was reset to `AVAILABLE`/`NULL` immediately after this
+proof so Phase 3 starts from a clean seat map.

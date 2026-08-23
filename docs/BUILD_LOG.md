@@ -31,7 +31,7 @@
 |---|---|---|---|
 | 0 | Foundation and tooling | 7 | 7/7 |
 | 1 | Database and auth | 7 | 7/7 |
-| 2 | Venues, events, shows, seat map | 7 | 0/7 |
+| 2 | Venues, events, shows, seat map | 7 | 7/7 |
 | 3 | **Seat holds, TTL, concurrency** ⭐ | 9 | 0/9 |
 | 4 | Booking, QR, email outbox | 8 | 0/8 |
 | 5 | **Waitlist and time-limited offers** ⭐ | 8 | 0/8 |
@@ -40,7 +40,7 @@
 | 8 | Reports, admin, check-in | 5 | 0/5 |
 | 9 | Hardening and proof | 6 | 0/6 |
 | 10 | Docs, deploy, demo | 7 | 0/7 |
-| | **Total** | **79** | **14/79** |
+| | **Total** | **79** | **21/79** |
 
 ---
 
@@ -80,13 +80,13 @@
 
 | ID | Change | Status | Files touched | Verified by | Commit |
 |---|---|---|---|---|---|
-| P2-1 | Venue CRUD with `layout_meta` (rows, cols, aisles, stage position) | ⬜ | `modules/venues/*` | E2E CRUD | |
-| P2-2 | Seat categories per venue with colour and sort order | ⬜ | `modules/venues/*` | `UNIQUE (venue_id, name)` enforced | |
-| P2-3 | Bulk seat creation from a row spec; reject duplicate grid coordinates | ⬜ | `venues.service.js`, `venues.queries.js` | 200-seat venue in one call | |
-| P2-4 | Event CRUD (ownership-guarded) + public browse with filters and pagination | ⬜ | `modules/events/*` | Filter combinations tested | |
-| P2-5 | Show creation with per-category pricing and per-show `hold_ttl_seconds` | ⬜ | `modules/shows/*` | Prices unique per category | |
-| P2-6 | ⭐ `publishShow()` materialises one `show_seats` row per venue seat, one batched insert in a transaction | ⬜ | `shows.service.js`, `shows.queries.js` | 200 seats → 200 rows, all `AVAILABLE` | |
-| P2-7 | ⭐ `GET /shows/:id/seatmap` returning **effective** state (expired HELD ⇒ available) | ⬜ | `modules/seatmap/*` | Test: manually stale HELD row reads as available | |
+| P2-1 | Venue CRUD with `layout_meta` (rows, cols, aisles, stage position) | ✅ | `modules/venues/venues.{routes,controller,service,queries}.js`, `shared/schemas/venue.schema.js` | Live against the real DB/HTTP: `POST /venues` created "Test Cinema" with a `layoutMeta` object round-tripping intact; `GET /venues/:id`, `GET /venues` both correct; `GET /venues/:id` for a random uuid → `404 NOT_FOUND`. Full transcript in `docs/TESTING.md`. | |
+| P2-2 | Seat categories per venue with colour and sort order | ✅ | `venues.queries.js#insertCategory/listCategoriesByVenue` | Live: created "Premium" and "Standard" on the test venue; re-POSTing "Standard" → `409 CONFLICT` (the `UNIQUE (venue_id, name)` violation caught and translated, not a raw 500). | |
+| P2-3 | Bulk seat creation from a row spec; reject duplicate grid coordinates | ✅ | `venues.queries.js#insertSeatsBulk`, `venues.service.js#bulkCreateSeats` | Live: one `POST .../seats/bulk` call with 2 row specs created 10 seats (rows A and B) via a single `unnest()` INSERT; a follow-up row spec deliberately colliding on `gridRow: 1` → `409 CONFLICT`, zero seats written (transaction rolled back, not a partial insert). | |
+| P2-4 | Event CRUD (ownership-guarded) + public browse with filters and pagination | ✅ | `modules/events/events.{routes,controller,service,queries}.js`, `shared/schemas/event.schema.js`, `server/src/middleware/validate.js` (Express 5 fix, see D-31) | Live: organiser created an event; a second organiser's `PATCH` on it → `403 FORBIDDEN` (`requireOwnership`); browse with `type`+`city` matched, `city=Nowhere` and `q=Nonexistent` both correctly returned empty; malformed `?page=notanumber` → `422 VALIDATION_ERROR`, not a crash. Two real bugs found and fixed live — see D-31 (Express 5's `req.query` has no setter) and D-32 (`.partial()` doesn't strip Zod `.default()`, so a bare `PATCH {isPublished:true}` was silently wiping `description`). | |
+| P2-5 | Show creation with per-category pricing and per-show `hold_ttl_seconds` | ✅ | `modules/shows/shows.{routes,controller,service,queries}.js`, `shared/schemas/event.schema.js` | Live: created a show with 2 category prices in one transaction; omitted `holdTtlSeconds`/`offerTtlSeconds` correctly defaulted to 600/900 (`shows` table's own column defaults) after fixing D-30. `GET /shows/:id` returned the show with its event/venue/prices flattened into one response. | |
+| P2-6 | ⭐ `publishShow()` materialises one `show_seats` row per venue seat, one batched insert in a transaction | ✅ | `shows.service.js#publishShow`, `shows.queries.js#materialiseShowSeats/countShowSeats` | Live: publishing the 10-seat test venue's show created exactly 10 `show_seats` rows, all `AVAILABLE` (`seatCount: 10` in the response, cross-checked against the seatmap read below). Publishing the same show again → `409 CONFLICT` ("already been published"), not a duplicate-seat corruption — both the pre-insert `countShowSeats` check and, as a backstop, `UNIQUE (show_id, seat_id)` on a caught `23505` (see shows.service.js's WALKTHROUGH comment on the deliberate check-then-act, logged as Phase 2 debt below). | |
+| P2-7 | ⭐ `GET /shows/:id/seatmap` returning **effective** state (expired HELD ⇒ available) | ✅ | `modules/seatmap/seatmap.{routes,controller,service,queries}.js` | **The literal proof requested**: manually ran `UPDATE show_seats SET state='HELD', expires_at = now() - interval '1 hour' ... RETURNING id, state, expires_at, (expires_at <= now()) AS is_past` directly against `ticket_booking` — raw result `{"state":"HELD","expires_at":"2026-08-23T18:52:14.296Z","is_past":true}`. Immediately after, `GET /api/v1/shows/:id/seatmap` reported that exact `showSeatId` as `"state":"AVAILABLE"`. Re-queried the raw row *after* the HTTP call to rule out anything else touching it: still stored as `HELD`, still in the past. No worker, poller, or cron exists yet (Phase 3) — the effective-state `CASE` in `seatmap.queries.js` is the only thing that could have produced `AVAILABLE`. Row reset to `AVAILABLE`/`NULL` afterward so it doesn't pollute Phase 3's starting state. Full transcript in `docs/TESTING.md`. | |
 
 **Exit criteria:** A published show returns a complete seat map with live-derived states.
 
@@ -262,6 +262,9 @@ Record every non-obvious choice here as it is made. This is the artefact that sh
 | D-27 | 2026-08-24 | `refresh_tokens` table (migration 008) added beyond docs/PROJECT_PROMPT.md §4.2's original schema; refresh tokens are still real JWTs (`jsonwebtoken`, matching the stack's own framing) with this table as a hash-based allowlist alongside them | A bare stateless JWT refresh token with no DB backing | "Rotation with reuse detection" (P1-5's own task description) is impossible with a stateless JWT alone — a signature proves a token wasn't forged, not whether *this specific* token has already been consumed. §4.2 is silent on this because reuse detection wasn't yet a fully worked-out requirement when that schema was written. The JWT signature is still the first, cheaper line of defence against a forged token; the DB row is what actually gates rotation. |
 | D-28 | 2026-08-24 | `POST /auth/register` can only self-grant `CUSTOMER` or `ORGANISER`; `ADMIN` is never reachable through the public registration endpoint, regardless of what the request body's `role` field says | Accept and store whatever role the client sends, since `shared/schemas/auth.schema.js` already constrains it to the three valid enum values | The Zod schema only constrains which *strings* are syntactically valid — accepting `{"role":"ADMIN"}` verbatim would let anyone become an admin. `auth.service.js#resolveRegistrationRole` is the actual authorization decision, deliberately kept out of the shared schema so the same schema can later serve an admin-only "create organiser" endpoint that *does* need to accept an arbitrary role from a trusted caller. |
 | D-29 | 2026-08-24 | `auth.queries.js#findRefreshTokenByHash` computes `is_expired` in SQL (`expires_at <= now()`) and returns it as `tokenRow.isExpired`; `auth.service.js#refreshTokens` checks that boolean instead of comparing `tokenRow.expiresAt` against `new Date()` | Leave the app-clock comparison as originally written | Found during the `/close-phase 1` audit: CLAUDE.md's "`now()` always comes from Postgres, never the app clock" is stated project-wide, not scoped to the seat-hold TTL mechanism it was first written about. The original `new Date()` comparison would be wrong under clock skew between the app server and the DB server — low-probability on a single dev machine, but exactly the failure mode the invariant exists to rule out categorically, not just where it's currently convenient. Verified live post-fix: a token back-dated directly in Postgres (independent of any JS-side date arithmetic) is correctly detected as expired by `tokenRow.isExpired`. |
+| D-30 | 2026-08-24 | Postgres literals (`600`, `900`, `'#6366f1'`) used instead of `COALESCE($n, DEFAULT)` for optional insert columns with a DB-side default | `COALESCE($n, DEFAULT)` to let the column's own `DEFAULT` clause apply when the caller omits a value | `DEFAULT` is only a valid bare token inside a `VALUES (...)` list — Postgres rejects it as an argument to `COALESCE()` (`42601: DEFAULT is not allowed in this context`). Caught live running `shows.queries.js#insertShow` for the first time (P2-5) with `holdTtlSeconds`/`offerTtlSeconds` omitted; `venues.queries.js#insertCategory` had the identical pattern for `colorHex` but was fixed before it was ever exercised live. The literal must be kept in sync with the column's actual default (both commented in place) — a real but small cost next to not being able to omit the field at all. |
+| D-31 | 2026-08-24 | `middleware/validate.js` sets `req.query` via `Object.defineProperty(req, 'query', { value, writable: true, ... })` when `source === 'query'`, instead of a plain assignment | Leave the existing `req[source] = result.data` for every source, including `query` | Express 5 defines `req.query` as a getter-only accessor (lazily parses the URL, no setter) — a plain `req.query = ...` throws `TypeError: Cannot set property query of #<IncomingMessage> which has only a getter`. This bug has existed in `validate.js` since P0-4/P1-x, but nothing had ever called `validate(schema, 'query')` until P2-4's `GET /events` browse filters, so it was never exercised. `req.body` and `req.params` remain plain writable properties in Express 5 and don't need the workaround. |
+| D-32 | 2026-08-24 | `shared/schemas/event.schema.js#updateEventSchema` is a hand-written object with no field carrying `.default()`, instead of `createEventSchema.partial()` | `createEventSchema.partial()`, extended with `isPublished` | `.partial()` only makes each field optional — it does **not** strip a field's own `.default()`. `createEventSchema.description` is `z.string().optional().default('')`; under `.partial()`, an absent `description` key in the PATCH body still parses into `description: ''`, and `validate.js` hands that fully-defaulted object to the controller as `req.body`. Since `events.queries.js#updateEvent` applies whatever keys are present in the object it's given, a bare `PATCH { isPublished: true }` was silently overwriting the event's real description with an empty string — caught live at P2-4 when a test event's `"A test film"` description turned into `""` after a PATCH that never mentioned it. The fix is a schema where every field is genuinely absent-when-omitted (no `.default()` anywhere), so PATCH semantics (only touch what's sent) actually hold. |
 
 ---
 
@@ -297,6 +300,51 @@ where that harness is built for real. Tracked here explicitly rather than left i
 | `requireOwnership` — organiser on someone else's resource → 403, on their own → 200 | P1-6 (`docs/TESTING.md`) | P3-9 |
 | Refresh-token rotation — new token differs, same `family_id` | P1-5 (`docs/TESTING.md`) | P3-9 |
 | Refresh-token reuse detection — replaying a rotated token revokes the whole family; a second attempt with the "new" token also fails | P1-5 (`docs/TESTING.md`) | P3-9 |
+| Bulk seat creation — one call, one `unnest()` INSERT, all-or-nothing on a grid collision | P2-3 (`docs/TESTING.md`) | P3-9 |
+| `publishShow()` — materialises exactly one `show_seats` row per active venue seat; republishing → `409`, no duplicate rows | P2-6 (`docs/TESTING.md`) | P3-9 |
+| **Seatmap effective-state (lazy expiry, Layer 1)** — a manually stale `HELD` row reads as `AVAILABLE` with zero workers running | P2-7 (`docs/TESTING.md`) | P3-9, alongside `holdExpiry.test.js` — this is the same mechanism §5.2's Layer 1, just proven before Layers 2/3 (the job and the cron) exist to compete with it |
+| Category/event/show ownership and role gates (organiser-vs-organiser, admin-vs-organiser) across the new Phase 2 routes | P2-1..P2-6 (`docs/TESTING.md`) | P3-9 |
+
+---
+
+## Phase 2 debt
+
+Phase 2 is CRUD scaffolding for Phase 3 to sit on, not a scored mechanism (CLAUDE.md's Priority
+section: "if time runs short, cut screens — never cut Phase 3, 4 or 5"). Corners deliberately cut
+for speed, tracked here so they don't get mistaken for oversights later:
+
+- **Generic `CONFLICT` error code** for every unique-constraint violation (duplicate category
+  name, duplicate seat grid position, double-publish) instead of one code per resource. See
+  `shared/errors.js`'s own comment on `CONFLICT`.
+- **No client-side duplicate/collision pre-check** before `venues.queries.js#insertSeatsBulk` —
+  the DB's `UNIQUE` constraints are the only thing catching a bad request; a large request with
+  one bad row rolls back entirely rather than reporting which row was the problem.
+- **No cross-venue validation** on bulk seat creation (`categoryId` must exist, but nothing checks
+  it belongs to *this* venue) or show pricing (`prices[].categoryId` must exist, but nothing
+  checks it belongs to the show's venue). A category from Venue A could be attached to a seat or a
+  show price for Venue B; only a raw FK violation (still caught, still a clean error) stops a
+  fully bogus id.
+- **`publishShow()`'s "already published?" check is a plain check-then-act**, not a single atomic
+  statement — deliberately, since publishing is an admin-only, one-time-per-show action, not a
+  high-contention path the way seat acquisition is. `UNIQUE (show_id, seat_id)` is the real
+  backstop if two publish clicks ever do race (see the WALKTHROUGH comment on
+  `shows.service.js#publishShow`).
+- **Malformed `:id` path params** (not a valid uuid) surface as a raw Postgres error → generic
+  `500 INTERNAL_ERROR`, not a clean `400`/`404` — no route validates path params as uuids.
+- **`GET /events/:id` does not gate by `is_published`** — an organiser's unpublished draft is
+  fetchable by anyone who has (or guesses) its id. Intentional for this phase (an organiser needs
+  to fetch their own draft to attach shows to it) and documented in `events.service.js#getEvent`,
+  but real product behaviour a later phase should revisit with a proper "is this the owner"
+  branch instead of an open read.
+- **No DELETE routes** for venues, categories, seats, events, or shows — not in
+  `docs/PROJECT_PROMPT.md` §9's endpoint list, so none were built.
+- **No validation that a show's `prices[]` covers every category the venue actually has** — a show
+  can be created pricing only some of its venue's categories; the seatmap already reports
+  `priceCents: null` correctly for an unpriced category's seats (a `LEFT JOIN`, not an `INNER
+  JOIN`), but nothing stops that state from being created in the first place.
+- **Venue read routes gated to `ADMIN` + `ORGANISER`**, not just `ADMIN` — a judgment call (an
+  organiser needs to browse venues/categories to build a show) documented inline in
+  `venues.routes.js`, not literally specified either way in §9.
 
 ---
 
@@ -343,6 +391,7 @@ Append on every merge to `main`. Keep-a-Changelog format, Conventional Commits.
 | 2026-08-23 → 2026-08-24 | `/batch P1-1 to P1-4` | 1 (see commit hash reported in chat) | Branched `phase/1-db-auth` off `main`. Built all 7 migrations (schema from PROJECT_PROMPT.md §4.2, with the `show_seats.booking_id` FK deliberately deferred from 003 to 004 to resolve a real forward-reference the file-grouping created), `pool.js`, `withTransaction.js`, `enqueue.js`, `poller.js`, `backoff.js`, and `migrate.js`. Every verification criterion run live against the real `ticket_booking` database, not summarised or assumed — full output pasted into the new `docs/TESTING.md`: migrations up/down/reset all clean, `withTransaction` rollback + `idleCount` (not just `totalCount`) returning to 1 after each of 6 failed transactions, and 21 total poller-race trials with exactly one claim every time. Two real bugs found and fixed mid-batch, not just config choices — D-22 (node-pg-migrate's `--envPath` silently no-ops without `dotenv`) and D-23 (`z.coerce.number()` turns `""` into `0`, not `NaN`) — plus a third, D-24, fixing a P0-2 ESLint config comment that had been wrong since it was written but hadn't mattered until this batch's first unexported `function` declarations | P1-5 |
 | 2026-08-24 | `/batch P1-5 to P1-7` | 1 (see commit hash reported in chat) | Full auth module (register/login/refresh/logout/me, argon2, JWT access+refresh, httpOnly cookies), `requireAuth`/`requireRole`/`requireOwnership` middleware, and the seed skeleton. Added `refresh_tokens` (migration 008, D-27) and 5 auth error codes beyond what §4.2/§9 name explicitly. Two real, security-relevant bugs found and fixed by actually running the reuse-detection proof against the real DB instead of trusting the code by inspection: a `jti`-less refresh JWT could hash-collide within the same second (D-25), and — the more serious one — the reuse-detection branch was throwing from inside the same transaction that revoked the token family, so `withTransaction`'s unconditional rollback silently undid the revocation every time (D-26). RBAC/ownership proven over real HTTP via temporary routes since no `events` table exists yet to test against for real (D-28 covers the registration role-escalation guard found along the way). Full proof output in `docs/TESTING.md`. **Phase 1 complete, 7/7.** | `/close-phase 1` |
 | 2026-08-24 | `/close-phase 1` audit | 2 (see commit hashes reported in chat: fix, then the merge) | First pass found one real invariant violation (`auth.service.js` checking refresh-token expiry via `new Date()` instead of Postgres's `now()`, contradicting CLAUDE.md's project-wide app-clock rule) and one accepted gap (RBAC/ownership/rotation proven live but not yet automated tests, since no Vitest harness exists — that's P3-9's job). User approved fixing the first and explicitly deferring the second: fixed `auth.service.js`/`auth.queries.js` to compute expiry in SQL (D-29), re-verified live (a token back-dated directly in Postgres, independent of any JS date arithmetic, correctly caught as expired), and added the "Test debt" section tracking what P3-9 needs to write. Second pass re-audited that one point: **CLEAR**. `phase/1-db-auth` merged into `main`, tagged `v0.2.0-phase1`, both pushed | P2-1 |
+| 2026-08-24 | `/batch P2-1 to P2-7` | 1 (see commit hash reported in chat) | Branched `phase/2-venues-shows` off `main`. Built venues (CRUD + categories + bulk seat creation), events (CRUD + ownership-guarded PATCH + public browse), shows (creation with per-category pricing, ⭐ `publishShow()`), and seatmap (⭐ effective-state read — Layer 1 of the TTL design, live before Phase 3 exists to build Layers 2/3). Explicitly speed-over-polish per this phase's instructions — see "Phase 2 debt" above. Three real bugs found and fixed by actually running every endpoint against the real DB/HTTP instead of trusting the code by inspection, not just config choices: D-30 (`COALESCE($n, DEFAULT)` isn't valid Postgres — caught creating a show with default TTLs), D-31 (Express 5's `req.query` is a getter with no setter — `validate.js` had carried this bug since P0-4/P1-x, unexercised until P2-4's first query-validated route), and D-32 (`.partial()` doesn't strip Zod `.default()` — a bare `PATCH {isPublished:true}` was silently wiping an event's `description`, caught by checking the DB's actual state after the call, not just the response). **P2-7's lazy-expiry proof run exactly as requested**: manually `UPDATE`'d a `show_seats` row to `HELD` with `expires_at` an hour in the past, confirmed via `RETURNING` that the raw row really was stale, then called `GET /shows/:id/seatmap` and got `AVAILABLE` back for that seat — with no Phase-3 worker or scheduler running to have done it any other way. Full transcripts in `docs/TESTING.md`. No `npm test` yet (script doesn't exist until P3-9's Vitest harness, consistent with Phase 0/1) — `npm run lint` clean. **Phase 2 complete, 7/7.** | `/close-phase 2` |
 
 ---
 

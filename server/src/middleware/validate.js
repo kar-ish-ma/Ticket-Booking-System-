@@ -37,12 +37,28 @@ export function validate(schema, source = 'body') {
       return;
     }
 
-    // WHY reassigning req[source] instead of leaving the original body/query/params alone:
+    // WHY replacing req[source] instead of leaving the original body/query/params alone:
     // Zod's parse result carries defaults and coercions (e.g. a query string "5" becoming the
     // number 5) that the raw request never had. Every handler downstream should see the
     // validated, normalised value -- reading req.body directly after this middleware would
     // silently skip that normalisation.
-    req[source] = result.data;
+    //
+    // WHY Object.defineProperty for 'query' specifically, not the plain `req.query = ...` this
+    // used before: Express 5 defines req.query as a getter with no setter (it lazily parses the
+    // URL on first access) -- a plain assignment throws "Cannot set property query of
+    // #<IncomingMessage> which has only a getter". body and params stay plain writable
+    // properties in Express 5, so they don't need this. Found live: no route validated `query`
+    // until P2-4's GET /events browse filters, so this had never been exercised before.
+    if (source === 'query') {
+      Object.defineProperty(req, 'query', {
+        value: result.data,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    } else {
+      req[source] = result.data;
+    }
     next();
   };
 }

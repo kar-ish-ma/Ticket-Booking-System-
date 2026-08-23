@@ -28,6 +28,10 @@ import { env } from './config/env.js';
 import { mountSwagger } from './config/swagger.js';
 import { healthRouter } from './modules/health/health.routes.js';
 import { authRouter } from './modules/auth/auth.routes.js';
+import { venuesRouter } from './modules/venues/venues.routes.js';
+import { eventsRouter } from './modules/events/events.routes.js';
+import { eventShowsRouter, showsRouter } from './modules/shows/shows.routes.js';
+import { seatmapRouter } from './modules/seatmap/seatmap.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -54,6 +58,15 @@ app.use('/health', healthRouter);
 // WHY /api/v1: docs/PROJECT_PROMPT.md §9 bases the whole domain API here (health and the
 // Swagger UI are the two deliberate exceptions, listed outside it in §9 itself).
 app.use('/api/v1/auth', authRouter);
+app.use('/api/v1/venues', venuesRouter);
+app.use('/api/v1/events', eventsRouter);
+// WHY mounted at the same path as the show-detail/publish routes below: this router only
+// handles POST / (i.e. POST /api/v1/events/:eventId/shows), scoped to its parent event by
+// { mergeParams: true } (shows.routes.js). Nesting it under /events instead of /shows keeps
+// "create a show" reading as "add a show to this event," matching docs/PROJECT_PROMPT.md §9.
+app.use('/api/v1/events/:eventId/shows', eventShowsRouter);
+app.use('/api/v1/shows', showsRouter);
+app.use('/api/v1/shows', seatmapRouter);
 mountSwagger(app);
 
 // WHY a 404 handler here, before the error handler:
