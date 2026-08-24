@@ -692,3 +692,68 @@ proven, not merely present.
 ```
 
 `npm run lint` clean throughout.
+
+### Phase 3 close-out audit — two gaps found and closed
+
+`/close-phase 3`'s first pass found the suite above proved the mechanisms it set out to prove, but
+missed two things a real audit is supposed to catch: the phase's own exit criterion has a WRITE
+half the original tests never touched, and P3-4's `releaseHold()` had no permanent test at all.
+Both were closed the same session, each with its own live falsification before being trusted.
+
+**Gap 1 — the write side of "seats free themselves."** `holdExpiry.test.js` only proved the READ
+side (`GET /shows/:id/seatmap` reporting `AVAILABLE`). Proven live during the audit: temporarily
+removing `acquireSeats()`'s `(state='HELD' AND expires_at<=now())` OR-branch left the ENTIRE e2e
+suite green — nothing would have failed if that exact mechanism were deleted:
+
+```
+> npx vitest run --config vitest.e2e.config.js   (branch removed)
+ Test Files  2 passed (2)
+      Tests  4 passed (4)
+```
+
+A second test was added to `holdExpiry.test.js`: hold a seat as user A, force `expires_at` into
+the past, then have user B's REAL `POST /holds` reclaim it — asserting `201` (not `409`), a new
+`hold_id`, and a fresh `expires_at` in the future. Falsified the same way, this time against the
+new test specifically:
+
+```
+ FAIL  tests/e2e/holdExpiry.test.js > ... a second POST /holds ... succeeds ...
+     expected 409 to be 201
+```
+
+Predicate restored, `git status` confirmed zero diff, full suite re-run green (`holdExpiry.test.js`
+now 2/2).
+
+**Gap 2 — P3-4's `releaseHold()` had zero permanent tests.** Everything about idempotent release,
+ownership, and the stale-holdId case existed only as session-script transcripts earlier in this
+file. `tests/e2e/holds.test.js` was added with all three cases. The stale-holdId case was
+falsified specifically, since it's the one where a wrong predicate corrupts a live hold silently
+instead of erroring: `markSeatHoldReleased()`'s predicate was temporarily changed from
+`WHERE id = $1` (the hold's own primary key) to
+`WHERE show_id = (SELECT show_id FROM seat_holds WHERE id = $1)` (i.e., "the show's currently
+active hold" — a plausible mistake for a dev conflating "release THIS hold" with "release the
+active hold in this show"):
+
+```
+ FAIL  tests/e2e/holds.test.js > ... releasing A after B has reclaimed the seat ...
+     AssertionError: expected 'RELEASED' to be 'ACTIVE'
+```
+
+Releasing stale hold A silently flipped user B's live, unrelated, still-`ACTIVE` hold to
+`RELEASED` — no error, no 4xx, a real customer's hold quietly cancelled out from under them.
+Predicate restored, confirmed byte-for-byte unchanged, full suite re-run green.
+
+**Final state after both fixes:**
+
+```
+> npm run test:unit
+ Test Files  1 passed (1)       Tests  31 passed (31)
+
+> npm run test:e2e
+ Test Files  3 passed (3)       Tests  8 passed (8)
+```
+
+`npm run lint` clean. See Decisions Ledger D-40 (why `assertTransition()` still has no production
+call site — a design boundary, not an oversight), D-41 (`MAX_SEATS_PER_BOOKING` enforced in the
+service layer), and D-42 (`requireOwnership` on `DELETE /holds/:id`) for the three Ledger gaps the
+same audit found and closed.
