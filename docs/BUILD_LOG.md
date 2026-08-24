@@ -33,14 +33,14 @@
 | 1 | Database and auth | 7 | 7/7 |
 | 2 | Venues, events, shows, seat map | 7 | 7/7 |
 | 3 | **Seat holds, TTL, concurrency** ⭐ | 9 | 5/9 |
-| 4 | Booking, QR, email outbox | 8 | 0/8 |
+| 4 | Booking, QR, email outbox | 9 | 0/9 |
 | 5 | **Waitlist and time-limited offers** ⭐ | 8 | 0/8 |
 | 6 | Realtime seat map | 5 | 0/5 |
 | 7 | React frontend | 10 | 0/10 |
 | 8 | Reports, admin, check-in | 5 | 0/5 |
 | 9 | Hardening and proof | 6 | 0/6 |
 | 10 | Docs, deploy, demo | 7 | 0/7 |
-| | **Total** | **79** | **26/79** |
+| | **Total** | **80** | **26/80** |
 
 ---
 
@@ -134,22 +134,50 @@ building it early and revisiting it per phase.
 
 ## Phase 4 — Booking, QR, email outbox
 
+**Ordering change (2026-08-24, user directive):** P4-2 (`confirmBooking()`) and P4-8
+(`cancelBooking()`, redefined below to cover cancellation only) move ahead of the rest of Phase 4
+and are built immediately before Phase 5, because Phase 5's cascade is built directly on top of
+both: §7.2's cancellation→offer flow only exists as a continuation of `cancelBooking()`, and §7.3's
+offer-acceptance reuses "the same guarded transaction shape as §6.5" — i.e. `confirmBooking()`'s
+own `expires_at > now()` pattern. The rest of Phase 4 (P4-1, P4-3, P4-6, P4-7, and the
+booking-history/PDF half of the old P4-8, split out below as **P4-9**) follows all of Phase 5.
+
+**Real dependency found while planning this reorder, not just a preference:** `bookings.reference`
+and `bookings.qr_token` are both `NOT NULL` (004_bookings.sql) — `confirmBooking()` cannot insert a
+valid row without a reference and a QR token, which means **P4-4** (reference generator) and
+**P4-5** (QR service) are hard prerequisites of P4-2, not later, independent tasks. Likewise,
+`cancelBooking()`'s own spec (P4-8) names "refund" explicitly — a real dependency on whatever P4-1
+(mock payments) provides for `refund()`. All three (P4-1, P4-4, P4-5) are small, self-contained
+utilities with no dependency on Phase 5 or on each other's more elaborate future scope (P4-1's
+`authorize()`/`capture()` beyond what confirm needs, P4-6/P4-7's outbox/email), so they're pulled
+forward as prerequisites of P4-2/P4-8 rather than silently skipped or deferred against their own
+structural need. Final build order for this stretch: **P4-4 → P4-5 → P4-1 → P4-2 → P4-8 → all of
+Phase 5 → P4-3 → P4-6 → P4-7 → P4-9**. Each still gets its own plan and its own commit — this is an
+order change, not a batching license (CLAUDE.md's plan-mode rule for Phase 3/4/5 still applies to
+every single row below).
+
 | ID | Change | Status | Files touched | Verified by | Commit |
 |---|---|---|---|---|---|
-| P4-1 | Mock payment service: authorize → capture → refund | ⬜ | `modules/payments/*` | Unit test | |
-| P4-2 | ⭐ `confirmBooking()`: hold→booking with the `expires_at > now()` guard; short `rowCount` ⇒ `410 HOLD_EXPIRED` | ⬜ | `bookings.service.js`, `bookings.queries.js` | Confirm at TTL+1ms fails cleanly | |
-| P4-3 | Idempotency via the `bookings.idempotency_key` unique constraint — on conflict, return the original | ⬜ | `middleware/idempotency.js`, `bookings.queries.js` | 20 parallel replays → 1 booking | |
-| P4-4 | Booking reference generator (Crockford base32, no ambiguous characters) | ⬜ | `utils/reference.js` | 100k generated, zero collisions | |
-| P4-5 | ⭐ QR service: signed JWT (separate secret) → PNG buffer | ⬜ | `bookings/qr.service.js` | Decoded QR verifies against the secret | |
-| P4-6 | ⭐ Transactional outbox: row + `OUTBOX_SEND` job both written in the booking transaction; 60s reconciler for orphaned rows | ⬜ | `queue/handlers/outboxSend.js`, `jobs/outboxReconciler.job.js` | Rolled-back booking sends no email | |
-| P4-7 | Nodemailer + EJS templates; QR inline via CID; **Ethereal** auto-account in dev, preview URL logged | ⬜ | `mail/*` | Ethereal preview shows a rendering QR | |
-| P4-8 | Booking history, detail, PDF ticket, cancellation (refund + seat release) | ⬜ | `bookings.*`, `ticketPdf.service.js` | E2E full lifecycle | |
+| P4-1 | Mock payment service: authorize → capture → refund | ⬜ **built before P4-2/P4-8** — see ordering note above | `modules/payments/*` | Unit test | |
+| P4-2 | ⭐ `confirmBooking()`: hold→booking with the `expires_at > now()` guard; short `rowCount` ⇒ `410 HOLD_EXPIRED` | ⬜ **next** | `bookings.service.js`, `bookings.queries.js` | Confirm at TTL+1ms fails cleanly | |
+| P4-3 | Idempotency via the `bookings.idempotency_key` unique constraint — on conflict, return the original | ⬜ **deferred to after Phase 5** — see ordering note above | `middleware/idempotency.js`, `bookings.queries.js` | 20 parallel replays → 1 booking | |
+| P4-4 | Booking reference generator (Crockford base32, no ambiguous characters) | ⬜ **built before P4-2** — see ordering note above | `utils/reference.js` | 100k generated, zero collisions | |
+| P4-5 | ⭐ QR service: signed JWT (separate secret) → PNG buffer | ⬜ **built before P4-2** — see ordering note above | `bookings/qr.service.js` | Decoded QR verifies against the secret | |
+| P4-6 | ⭐ Transactional outbox: row + `OUTBOX_SEND` job both written in the booking transaction; 60s reconciler for orphaned rows | ⬜ **deferred to after Phase 5** — see ordering note above | `queue/handlers/outboxSend.js`, `jobs/outboxReconciler.job.js` | Rolled-back booking sends no email | |
+| P4-7 | Nodemailer + EJS templates; QR inline via CID; **Ethereal** auto-account in dev, preview URL logged | ⬜ **deferred to after Phase 5** — see ordering note above | `mail/*` | Ethereal preview shows a rendering QR | |
+| P4-8 | ⭐ `cancelBooking()`: refund + seat release, routing freed seats through `bookings.service.js`/`offers.service.js` per §7.2 — **redefined to cancellation only**; booking history/detail/PDF split out to P4-9 below | ⬜ **built right after P4-2** — see ordering note above | `bookings.service.js`, `bookings.queries.js` | Cancelling a booking with an empty waitlist frees seats to `AVAILABLE`; with a non-empty waitlist, seats go to `OFFER_RESERVED` (proven fully once Phase 5 exists to receive the hand-off) | |
+| P4-9 | Booking history, detail, PDF ticket | ⬜ **deferred to after Phase 5** — see ordering note above. Split from the original P4-8, which bundled this with cancellation | `bookings.*`, `ticketPdf.service.js` | E2E full lifecycle | |
 
 **Exit criteria:** Book → email with a scannable QR lands. A rolled-back booking sends nothing.
 
 ---
 
 ## Phase 5 — Waitlist and time-limited offers ⭐
+
+**Sequencing note (2026-08-24):** built immediately after P4-2/P4-8 (see Phase 4's ordering note
+above), before the rest of Phase 4. One task at a time, each with its own approved plan — no
+`/batch` (already excluded for this phase by that skill's own description, but restated here since
+it's the scored phase this project cares most about getting right).
 
 | ID | Change | Status | Files touched | Verified by | Commit |
 |---|---|---|---|---|---|
