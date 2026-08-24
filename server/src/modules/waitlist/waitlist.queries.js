@@ -94,3 +94,22 @@ export async function findQueuePosition(client, { showId, categoryId, userId }) 
   if (!row) return null;
   return { position: row.position, total: row.total };
 }
+
+/**
+ * This user's waitlist_entries row for this (show, category), in whatever status it's actually
+ * in -- WAITING, OFFERED, CONVERTED, EXPIRED, or CANCELLED. Deliberately NOT filtered to WAITING
+ * (unlike findQueuePosition()'s subquery): GET /waitlist/me needs to report "you were offered a
+ * seat" or "your wait ended" just as much as a live position, and the UNIQUE constraint means
+ * there is at most one row to find regardless of status.
+ *
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {{ showId: string, categoryId: string, userId: string }} params
+ * @returns {Promise<object | null>} null if this user has never joined this (show, category)
+ */
+export async function findEntryForUser(client, { showId, categoryId, userId }) {
+  const result = await client.query(
+    `SELECT * FROM waitlist_entries WHERE show_id = $1 AND category_id = $2 AND user_id = $3`,
+    [showId, categoryId, userId]
+  );
+  return mapEntryRow(result.rows[0]);
+}

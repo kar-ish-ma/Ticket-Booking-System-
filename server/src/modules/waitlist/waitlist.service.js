@@ -73,3 +73,24 @@ export async function joinWaitlist({ showId, categoryId, userId, quantity }) {
 
   return { entry, position: position.position, total: position.total };
 }
+
+/**
+ * @param {{ showId: string, categoryId: string, userId: string }} params
+ * @returns {Promise<{ status: string, position: number | null, total: number | null }>}
+ *   `position`/`total` are null whenever the entry isn't currently WAITING -- OFFERED/CONVERTED/
+ *   EXPIRED/CANCELLED entries have no place in the WAITING-only ROW_NUMBER() ranking
+ *   (findQueuePosition()'s own subquery), and reporting a stale position for a queue you're no
+ *   longer in would be actively misleading rather than merely incomplete.
+ * @throws {NotFoundError} if this user has no waitlist_entries row for this (show, category)
+ */
+export async function getMyWaitlistStatus({ showId, categoryId, userId }) {
+  const entry = await waitlistQueries.findEntryForUser(pool, { showId, categoryId, userId });
+  if (!entry) throw new NotFoundError('No waitlist entry for this show and category');
+
+  if (entry.status !== 'WAITING') {
+    return { status: entry.status, position: null, total: null };
+  }
+
+  const position = await waitlistQueries.findQueuePosition(pool, { showId, categoryId, userId });
+  return { status: entry.status, position: position.position, total: position.total };
+}

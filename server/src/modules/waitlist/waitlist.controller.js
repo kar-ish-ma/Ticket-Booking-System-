@@ -27,3 +27,24 @@ export async function joinWaitlist(req, res, next) {
     next(err);
   }
 }
+
+/**
+ * GET /api/v1/shows/:showId/waitlist/me
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ * @returns {Promise<void>}
+ */
+export async function getMyWaitlistStatus(req, res, next) {
+  try {
+    const result = await waitlistService.getMyWaitlistStatus({
+      showId: req.params.showId,
+      categoryId: req.query.categoryId,
+      userId: req.user.id,
+    });
+    res.status(200).json({ success: true, data: result, error: null });
+  } catch (err) {
+    next(err);
+  }
+}
