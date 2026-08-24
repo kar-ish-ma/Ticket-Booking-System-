@@ -1,0 +1,77 @@
+# render.yaml -- Render Blueprint (https://render.com/docs/blueprint-spec)
+#
+# Deploys the ENTIRE application as one web service, plus one managed Postgres database. Only one
+# service to deploy because D-53 (docs/BUILD_LOG.md) already collapsed the client into
+# client/index.html, served by this same Express process via express.static -- there's no separate
+# frontend deploy target the way the original React/Vite plan would have needed.
+#
+# Does NOT set up: API_URL/WEB_URL (marked `sync: false` below -- Render only assigns this
+# service's public URL AFTER the first deploy, so there's a real chicken-and-egg here; see
+# docs/DEPLOYMENT.md's "Production deployment (Render)" section for the exact manual step) or SMTP
+# credentials (deliberately left unset -- see startCommand's own comment on why Ethereal is the
+# right choice even in this "production" deployment).
+#
+# Usage: in the Render dashboard, "New +" -> "Blueprint", point it at this repo. Render reads this
+# file and provisions both resources below in one pass.
+
+services:
+  - type: web
+    name: ticket-booking-system
+    runtime: node
+    plan: free
+    region: oregon
+    # WHY phase/4-booking-qr, not main: main was last fast-forward merged after Phase 3
+    # (docs/BUILD_LOG.md's Git checkpoints table) -- everything since (bookings, waitlist, the
+    # client) lives on this branch, not yet merged. Point this at main once a /close-phase merge
+    # actually happens; deploying main today would ship an app with no client and no booking flow.
+    branch: phase/4-booking-qr
+    buildCommand: npm install
+    # WHY migrate + seed run on every boot, not just the first one: both are idempotent
+    # (node-pg-migrate tracks applied migrations in its own table; seed.js's inserts are all
+    # ON CONFLICT DO NOTHING / existence-gated -- see that file's own header). Running them on
+    # every deploy means a fresh Postgres gets the schema and demo catalogue with zero manual
+    # steps, and a redeploy after a schema change picks up new migrations automatically, matching
+    # PROJECT_PROMPT.md §13's "seeded and warm" deliverable.
+    startCommand: npm run db:migrate && npm run db:seed && node server/src/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22.19.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ticket-booking-db
+          property: connectionString
+      # WHY generateValue instead of a literal here: three independent, real random secrets,
+      # never committed to the repo, never typed by hand -- Render generates each one at
+      # provision time. env.js's own boot check (Decisions Ledger D-10) still refuses to start if
+      # QR_SIGNING_SECRET ever collided with either JWT secret; astronomically unlikely across
+      # three independent generations, but the check stays live regardless.
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: QR_SIGNING_SECRET
+        generateValue: true
+      # WHY sync: false, not a value: Render only assigns this service's public URL once it
+      # exists -- there's no way to know it inside this file, written before the service does.
+      # Set both to the real https://<service>.onrender.com URL Render shows after the first
+      # deploy (docs/DEPLOYMENT.md has the exact dashboard steps). Until set, CORS/the waitlist
+      # claim-link email use env.js's own http://localhost:3000 default, which is wrong for a
+      # real deployment but not a boot-time failure -- see D-56 for why that default exists at
+      # all.
+      - key: API_URL
+        sync: false
+      - key: WEB_URL
+        sync: false
+      # WHY left unset rather than pointed at a real SMTP provider: this is a graded/demo
+      # deployment, not a real business. mail/mailer.js already treats an empty SMTP_HOST as
+      # "use Ethereal" regardless of NODE_ENV (see that file's own header) -- every booking/
+      # waitlist-offer email still genuinely renders and sends, a grader just reads the preview
+      # URL from this service's Render logs instead of a real inbox. Set SMTP_HOST/PORT/USER/PASS/
+      # MAIL_FROM here (Brevo, Resend, ...) only for an actual production deployment.
+
+databases:
+  - name: ticket-booking-db
+    plan: free
+    postgresMajorVersion: "16"

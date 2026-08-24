@@ -68,6 +68,19 @@ eventShowsRouter.post(
 
 /**
  * @openapi
+ * /api/v1/events/{eventId}/shows:
+ *   get:
+ *     summary: List an event's showtimes, soonest first (public)
+ *     tags: [Shows]
+ *     parameters:
+ *       - { in: path, name: eventId, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: "{ shows: [...] }" }
+ */
+eventShowsRouter.get('/', showsController.listShowsByEvent);
+
+/**
+ * @openapi
  * /api/v1/shows/{id}:
  *   get:
  *     summary: Get show detail — event, venue, and prices (public)

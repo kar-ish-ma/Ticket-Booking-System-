@@ -53,7 +53,10 @@ const schema = z
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
     API_URL: z.url().default('http://localhost:3000'),
-    WEB_URL: z.url().default('http://localhost:5173'),
+    // WHY this now defaults to the server's own origin, not a separate :5173: since D-53, the
+    // client is client/index.html served BY this Express process via express.static — there is
+    // no separate client dev server for WEB_URL to point at anymore.
+    WEB_URL: z.url().default('http://localhost:3000'),
 
     // No default: a wrong or missing DATABASE_URL must never silently point at nothing.
     DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),

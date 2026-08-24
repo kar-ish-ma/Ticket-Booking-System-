@@ -46,6 +46,14 @@ export async function createShow(eventId, input) {
 }
 
 /**
+ * @param {string} eventId
+ * @returns {Promise<object[]>}
+ */
+export async function listShowsByEvent(eventId) {
+  return showsQueries.listShowsByEvent(pool, eventId);
+}
+
+/**
  * @param {string} id
  * @returns {Promise<object>}
  * @throws {NotFoundError} if no show has this id

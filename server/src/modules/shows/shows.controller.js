@@ -24,6 +24,23 @@ export async function createShow(req, res, next) {
 }
 
 /**
+ * GET /api/v1/events/:eventId/shows
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ * @returns {Promise<void>}
+ */
+export async function listShowsByEvent(req, res, next) {
+  try {
+    const shows = await showsService.listShowsByEvent(req.params.eventId);
+    res.status(200).json({ success: true, data: { shows }, error: null });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/v1/shows/:id
  *
  * @param {import('express').Request} req

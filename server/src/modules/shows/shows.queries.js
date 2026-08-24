@@ -144,6 +144,30 @@ export async function findShowWithEventOwner(client, showId) {
 }
 
 /**
+ * The public "which showtimes does this event have" read — client/index.html's event-detail
+ * screen needs this to get from an event to a bookable showId; nothing else in this codebase
+ * lists shows by event (GET /shows/:id only ever takes a single already-known showId).
+ *
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {string} eventId
+ * @returns {Promise<object[]>} shows, camelCased, soonest first, each with its venue's name/city
+ */
+export async function listShowsByEvent(client, eventId) {
+  const result = await client.query(
+    `SELECT s.*, v.name AS venue_name, v.city AS venue_city
+       FROM shows s
+       JOIN venues v ON v.id = s.venue_id
+      WHERE s.event_id = $1
+      ORDER BY s.starts_at`,
+    [eventId]
+  );
+  return result.rows.map((row) => ({
+    ...mapShowRow(row),
+    venue: { id: row.venue_id, name: row.venue_name, city: row.venue_city },
+  }));
+}
+
+/**
  * @param {import('pg').PoolClient | import('pg').Pool} client
  * @param {string} showId
  * @returns {Promise<number>} how many show_seats rows already exist for this show — nonzero

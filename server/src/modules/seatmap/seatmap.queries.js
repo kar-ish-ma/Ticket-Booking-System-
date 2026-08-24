@@ -11,6 +11,11 @@
  * reads).
  *
  * Invariant: every function here takes a `client`.
+ *
+ * EFFECTIVE_STATE_CASE is exported (not just used internally) so any later query that needs to
+ * know "is this seat really available right now" -- waitlist.queries.js#countEffectiveAvailableSeats
+ * (P5-1) is the first -- reuses the exact same Layer-1 predicate instead of a second, independently
+ * maintained copy that could silently drift from this one.
  */
 
 // WHY this CASE expression, not a WHERE-clause filter or an application-side check:
@@ -22,7 +27,7 @@
 // reason holds.queries.js's acquire predicate will (Decisions Ledger D-14): expires_at is only
 // the current cascade attempt's deadline, and a seat must stay off the public map for the whole
 // cascade window, not just until one attempt lapses.
-const EFFECTIVE_STATE_CASE = `
+export const EFFECTIVE_STATE_CASE = `
   CASE
     WHEN ss.state = 'HELD' AND ss.expires_at <= now() THEN 'AVAILABLE'
     WHEN ss.state = 'OFFER_RESERVED' AND ss.reserved_until <= now() THEN 'AVAILABLE'

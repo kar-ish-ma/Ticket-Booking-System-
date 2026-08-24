@@ -126,3 +126,41 @@ export class SeatsUnavailableError extends DomainError {
     });
   }
 }
+
+// WHY 410 (Gone), not 404 or 409: the hold this request named DID exist and WAS valid -- it just
+// isn't anymore, and never will be again under this id (unlike SEATS_UNAVAILABLE's 409, which
+// describes a request that could succeed against a DIFFERENT seat). 410 is the one status whose
+// HTTP semantics mean exactly that: the resource existed, is now permanently gone, don't retry.
+export class HoldExpiredError extends DomainError {
+  constructor(message = 'This hold is no longer active') {
+    super(message, { status: 410, code: ERROR_CODES.HOLD_EXPIRED });
+  }
+}
+
+// WHY 409, not 422: the request shape and every rule the schema can express are fine -- the
+// conflict is with EXISTING data (a row this exact user/show/category already has), which is
+// what 409's HTTP semantics describe. Same family as ConflictError, but a dedicated class because
+// unlike Phase 2's generic CONFLICT (see that class's own comment), the UI genuinely needs to
+// react differently here: show the caller's current position, not "try a different name."
+export class AlreadyWaitlistedError extends DomainError {
+  constructor(message = 'You are already on the waitlist for this category') {
+    super(message, { status: 409, code: ERROR_CODES.ALREADY_WAITLISTED });
+  }
+}
+
+// WHY 410, same reasoning as HoldExpiredError: a token that doesn't match any stored hash, or
+// matches an offer that isn't PENDING (already ACCEPTED -- single-use -- or SUPERSEDED), named a
+// resource that existed once but is permanently done being claimable under this token.
+export class OfferInvalidError extends DomainError {
+  constructor(message = 'This offer is no longer valid') {
+    super(message, { status: 410, code: ERROR_CODES.OFFER_INVALID });
+  }
+}
+
+// Split from OfferInvalidError so the UI can say "this expired" rather than the more generic "no
+// longer valid" -- same token/hash match, same PENDING status, just past its expires_at.
+export class OfferExpiredError extends DomainError {
+  constructor(message = 'This offer has expired') {
+    super(message, { status: 410, code: ERROR_CODES.OFFER_EXPIRED });
+  }
+}

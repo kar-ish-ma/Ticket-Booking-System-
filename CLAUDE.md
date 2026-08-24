@@ -25,12 +25,17 @@ can reproduce the environment.
 
 Plain **JavaScript**, ESM (`"type": "module"`), Node 20+. **No TypeScript. No ORM.**
 
-- npm workspaces: `server/`, `client/`, `shared/`
+- npm workspaces: `server/`, `shared/`. `client/` is a plain static directory, not an npm
+  workspace — see below, and Decisions Ledger D-53.
 - **Server:** Express 5 · PostgreSQL via `pg` (raw SQL) · `node-pg-migrate` · `node-cron` ·
   Socket.IO · Zod · `jsonwebtoken` + `argon2` · Nodemailer + EJS · `qrcode` · `pino` ·
   `swagger-jsdoc`
-- **Client:** React 18 · Vite · React Router 6 · TanStack Query · Zustand · Tailwind + Headless UI ·
-  lucide-react · Recharts
+- **Client (2026-08-24, D-53 — dropped the original plan, not deferred):** one static
+  `client/index.html`, vanilla JS, no framework, no bundler, no build step. Served by the Express
+  server itself (`express.static`) at `/` — no separate dev server, no separate deploy target.
+  The original Phase 7 plan (React 18 · Vite · React Router 6 · TanStack Query · Zustand ·
+  Tailwind + Headless UI · lucide-react · Recharts) will not be built. Framework choice was never
+  the scored line item — the seat map working, live, is.
 - **Tests:** Vitest · Supertest · a real local `ticket_booking_test` database
 
 ### Hard constraints — never work around these
@@ -46,7 +51,7 @@ My machine is **Windows, 4 GB RAM, no Docker**. This is a limit, not a preferenc
   - Queue position → `ROW_NUMBER() OVER (ORDER BY enqueued_at)`
   - Distributed lock → not needed; the `FOR UPDATE` row lock is the correctness boundary
   - Idempotency → the `bookings.idempotency_key` unique constraint
-- Never assume the dev server, Vite, tests and a browser can run at once. Separate scripts.
+- Never assume the dev server, tests and a browser can run at once. Separate scripts.
 - `pg.Pool` max **10**. Seed venues at ~200 seats, not 2,000.
 - If a library needs a build step, a container, or more than ~200 MB, propose an alternative first.
 
@@ -175,8 +180,8 @@ Not wanted: comments restating the line below, JSDoc echoing parameter names, or
 
 ## Commands
 
-- Dev: `npm run dev:server` and `npm run dev:client` **in separate terminals**. Only use the
-  combined `npm run dev` if RAM allows.
+- Dev: `npm run dev:server` — one process serves both the API and the static client
+  (`client/index.html`) at `/`. There is no separate `dev:client` anymore (D-53).
 - Lint: `npm run lint` · Tests: `npm test` · Race suite: `npm run test:concurrency`
 - Migrate: `npm run db:migrate` · Seed: `npm run db:seed`
 - Postgres must be running (Windows service). No other service to start.
