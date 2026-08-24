@@ -140,11 +140,10 @@ have to happen in a browser, not in code.
 ### 1. Push to GitHub
 
 Render deploys from a Git repository it can see. This repo already has a GitHub remote
-(`origin`) — confirm `phase/4-booking-qr` (the branch `render.yaml` deploys, see its own comment)
-is pushed and current:
+(`origin`) — confirm `main` (the branch `render.yaml` deploys) is pushed and current:
 
 ```
-git push origin phase/4-booking-qr
+git push origin main
 ```
 
 ### 2. Create a Render account

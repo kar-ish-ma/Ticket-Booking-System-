@@ -25,7 +25,7 @@
 | `.prettierignore` | Excludes `docs/` and other `.md` — hand-formatted tables and prose shouldn't get reflowed. |
 | `.gitignore` | Excludes `node_modules`, `.env`, `dist`, coverage. |
 | `docs/` | See bottom of this file. |
-| `render.yaml` | Render Blueprint (P10-6): one Web Service (runs `client/index.html` and the API from the same Express process, D-53) + one managed Postgres. `startCommand` runs migrate + seed on every boot (both idempotent) before starting the server. `API_URL`/`WEB_URL` are `sync: false` — Render only assigns this service's URL after the first deploy, so they're set manually in the dashboard; see `docs/DEPLOYMENT.md`'s "Production deployment (Render)" section for the full click-through. `branch: phase/4-booking-qr`, not `main` — `main` is still only through Phase 3 (`docs/BUILD_LOG.md`'s Git checkpoints table). |
+| `render.yaml` | Render Blueprint (P10-6): one Web Service (runs `client/index.html` and the API from the same Express process, D-53) + one managed Postgres. `startCommand` runs migrate + seed on every boot (both idempotent) before starting the server. `API_URL`/`WEB_URL` are `sync: false` — Render only assigns this service's URL after the first deploy, so they're set manually in the dashboard; see `docs/DEPLOYMENT.md`'s "Production deployment (Render)" section for the full click-through. `branch: main` — `phase/4-booking-qr` was merged into `main` on 2026-08-24. |
 
 ---
 

@@ -20,11 +20,9 @@ services:
     runtime: node
     plan: free
     region: oregon
-    # WHY phase/4-booking-qr, not main: main was last fast-forward merged after Phase 3
-    # (docs/BUILD_LOG.md's Git checkpoints table) -- everything since (bookings, waitlist, the
-    # client) lives on this branch, not yet merged. Point this at main once a /close-phase merge
-    # actually happens; deploying main today would ship an app with no client and no booking flow.
-    branch: phase/4-booking-qr
+    # `phase/4-booking-qr` (bookings, waitlist, the client) was merged into `main` on 2026-08-24 --
+    # main is current and complete as of this Blueprint's own commit, so it's the deploy branch.
+    branch: main
     buildCommand: npm install
     # WHY migrate + seed run on every boot, not just the first one: both are idempotent
     # (node-pg-migrate tracks applied migrations in its own table; seed.js's inserts are all
