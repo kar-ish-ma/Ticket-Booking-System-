@@ -214,9 +214,13 @@ export async function loadHoldForOwnershipFromConfirmBody(req) {
  *    seat is still BOOKED, not by argument alone.
  *
  * @param {{ bookingId: string }} params
- * @returns {Promise<{ cancelled: boolean, releasedSeatsByCategory: Map<string, Array<{ seatId: string, showSeatId: string, state: string }>> }>}
+ * @returns {Promise<{ cancelled: boolean, releasedSeatsByCategory: Map<string, Array<{ seatId: string, showSeatId: string, state: string }>>, offersCreated: Array<{ userId: string, showId: string, categoryId: string, offer: object, rawToken: string, seatCount: number }> }>}
  *   `state` on each seat is `'AVAILABLE'` or `'OFFER_RESERVED'` depending on which branch that
- *   category resolved to
+ *   category resolved to. `offersCreated` is the caller's (bookings.controller.js) hook for
+ *   sending the waitlist-offer email (P4-7, mail/mailer.js#sendWaitlistOfferEmail) -- built here,
+ *   not returned by offers.service.js#createInitialOffer alone, because the recipient's userId
+ *   comes from the WAITLIST ENTRY (waitingEntry.userId), which this function already holds and
+ *   createInitialOffer() never receives.
  * @throws never; cancelling an already-cancelled or nonexistent-under-CONFIRMED booking is a
  *   normal, idempotent outcome (`cancelled: false`), not an error
  */
@@ -233,13 +237,14 @@ export async function cancelBooking({ bookingId }) {
     const show = showId ? await showsQueries.findShowById(client, showId) : null;
 
     const releasedSeatsByCategory = new Map();
+    const offersCreated = [];
     for (const categoryId of categoryIds) {
       const waitingEntry = await waitlistQueries.claimNextWaitingEntry(client, { showId, categoryId });
 
       if (waitingEntry) {
         // See this function's own WALKTHROUGH step 4c and offers.service.js#createInitialOffer's
         // header for where assertTransition(BOOKED, OFFER_RESERVED) is called.
-        const { seats } = await offersService.createInitialOffer(client, {
+        const { seats, offer, rawToken } = await offersService.createInitialOffer(client, {
           bookingId,
           categoryId,
           waitlistEntryId: waitingEntry.id,
@@ -250,6 +255,14 @@ export async function cancelBooking({ bookingId }) {
           categoryId,
           seats.map((seat) => ({ ...seat, state: SEAT_STATES.OFFER_RESERVED }))
         );
+        offersCreated.push({
+          userId: waitingEntry.userId,
+          showId,
+          categoryId,
+          offer,
+          rawToken,
+          seatCount: seats.length,
+        });
       } else {
         // See this function's own WALKTHROUGH step 4b / Decisions Ledger D-45.
         assertTransition(SEAT_STATES.BOOKED, SEAT_STATES.AVAILABLE);
@@ -264,7 +277,7 @@ export async function cancelBooking({ bookingId }) {
       }
     }
 
-    return { cancelled: booking !== null, releasedSeatsByCategory };
+    return { cancelled: booking !== null, releasedSeatsByCategory, offersCreated };
   });
 }
 

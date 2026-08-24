@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Seats available</title>
+</head>
+<body style="font-family: Arial, Helvetica, sans-serif; background: #f4f4f5; margin: 0; padding: 24px;">
+  <table role="presentation" width="100%" style="max-width: 480px; margin: 0 auto; background: #fff; border-radius: 8px; overflow: hidden;">
+    <tr>
+      <td style="background: #16a34a; color: #fff; padding: 20px 24px;">
+        <h1 style="margin: 0; font-size: 20px;">A seat opened up</h1>
+      </td>
+    </tr>
+    <tr>
+      <td style="padding: 24px;">
+        <p style="margin-top: 0;">Hi,</p>
+        <p>
+          <strong><%= seatCount %></strong> <%= category.name %> seat<%= seatCount === 1 ? '' : 's' %>
+          for <strong><%= show.event.title %></strong> at <%= show.venue.name %> just opened up from
+          your waitlist spot.
+        </p>
+
+        <p style="margin: 20px 0 4px; color: #6b7280; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;">
+          Total
+        </p>
+        <p style="margin: 0; font-size: 18px; font-weight: bold;">
+          $<%= (totalCents / 100).toFixed(2) %>
+        </p>
+
+        <p style="margin: 20px 0 4px; color: #6b7280; font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em;">
+          Claim by
+        </p>
+        <p style="margin: 0; font-size: 16px; font-weight: bold; color: #b91c1c;">
+          <%= new Date(expiresAt).toUTCString() %>
+        </p>
+
+        <div style="text-align: center; margin: 28px 0 8px;">
+          <a
+            href="<%= claimUrl %>"
+            style="display: inline-block; background: #16a34a; color: #fff; text-decoration: none; padding: 12px 28px; border-radius: 6px; font-weight: bold;"
+          >
+            Claim your seats
+          </a>
+        </div>
+        <p style="text-align: center; color: #6b7280; font-size: 12px; margin: 0;">
+          This link works once. If it expires, your spot returns to the waitlist queue.
+        </p>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
