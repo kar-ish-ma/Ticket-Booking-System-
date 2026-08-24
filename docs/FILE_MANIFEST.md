@@ -191,66 +191,17 @@ Each module is four files: `*.routes.js` (router + validation + Swagger JSDoc) �
 
 ---
 
-## `client/` — React + Vite
+## `client/` — static, vanilla (Decisions Ledger D-53)
 
-### Entry and routing
-
-| File | Purpose |
-|---|---|
-| `package.json` | Workspace manifest. `name: "client"`, `type: module`. Vite/React/Tailwind land in P7-1. |
-| `index.html` | Vite entry. |
-| `vite.config.js` | Dev proxy to the API so cookies work same-origin in development. |
-| `src/main.jsx` | Mounts React, wraps in QueryClientProvider, router, error boundary, toaster. |
-| `src/App.jsx` | Layout shell: nav, auth state, dark-mode toggle. |
-| `src/router.jsx` | All routes; `ProtectedRoute` wrapper enforcing role. |
-
-### Pages
+**2026-08-24, user directive:** the React + Vite tree this section used to describe (a `package.json`
+workspace, `src/main.jsx`, a router, per-page/per-component files) is dropped entirely, not scoped
+down within the same framework — see D-53 for the full reasoning and `docs/BUILD_LOG.md`'s Phase 7
+table for what this replaces. `client/` is now a plain static-assets directory, not an npm
+workspace — nothing in it has a dependency to install.
 
 | File | Purpose |
 |---|---|
-| `src/pages/Home.jsx` | Landing + featured events. |
-| `src/pages/Events.jsx` | Browse with filters (type, city, date, search) and pagination. |
-| `src/pages/EventDetail.jsx` | Event detail + showtime picker. |
-| `src/pages/ShowSeatMap.jsx` | ⭐ The seat map screen. The heart of the UX. |
-| `src/pages/Checkout.jsx` | ⭐ Checkout with the live hold countdown. |
-| `src/pages/BookingSuccess.jsx` | QR shown immediately, before the email arrives. |
-| `src/pages/Bookings.jsx` / `BookingDetail.jsx` | History, QR, download, cancel. |
-| `src/pages/WaitlistClaim.jsx` | ⭐ Public offer claim screen with countdown, accept, decline. |
-| `src/pages/organiser/*.jsx` | Dashboard, event/show creation, revenue reports, attendee manifest. |
-| `src/pages/admin/*.jsx` | Venue list, seat-layout designer, category management. |
-| `src/pages/Scan.jsx` | Camera QR scanner for gate check-in. |
-| `src/pages/Demo.jsx` | ⭐ Grader control panel — trigger each mechanism on demand. |
-
-### Components
-
-| File | Purpose |
-|---|---|
-| `src/components/seatmap/SeatMap.jsx` | ⭐ Grid renderer with aisles, stage marker, zoom/pan, keyboard nav. |
-| `src/components/seatmap/Seat.jsx` | ⭐ One seat: colour by effective state, hatched when held by another, pulsing outline when yours. |
-| `src/components/seatmap/SeatLegend.jsx` | Category colours, prices, state key. |
-| `src/components/seatmap/SelectionSummary.jsx` | Sticky bar: seats, total, Continue. |
-| `src/components/seatmap/PresenceIndicator.jsx` | "4 people viewing this show." |
-| `src/components/HoldCountdown.jsx` | ⭐ `mm:ss` from `expiresAt`, amber at 60s, red at 15s, fires the expiry handler at zero. |
-| `src/components/waitlist/WaitlistCard.jsx` | Join CTA + live position for a sold-out category. |
-| `src/components/waitlist/OfferCountdown.jsx` | Large countdown on the claim page. |
-| `src/components/QRTicket.jsx` | QR + booking reference. |
-| `src/components/CancelDialog.jsx` | Confirms cancellation, warns the seat goes to the waitlist. |
-| `src/components/RevenueChart.jsx` | Recharts revenue-by-category. |
-| `src/components/ui/*.jsx` | Button, Input, Dialog, Badge, Skeleton, Toast — hand-rolled on Tailwind + Headless UI. |
-
-### Client infrastructure
-
-| File | Purpose |
-|---|---|
-| `src/api/client.js` | `fetch` wrapper: credentials, refresh-on-401 retry, maps `error.code` to friendly messages via `shared/errors.js`. |
-| `src/api/*.js` | One file per domain (`holds.js`, `bookings.js`, `waitlist.js`) — thin functions returning parsed data. |
-| `src/lib/socket.js` | ⭐ Socket.IO client using `shared/socketEvents.js`; auto-rejoins the room and **hard-refetches the seat map on reconnect**. |
-| `src/hooks/useSeatMap.js` | ⭐ TanStack Query + socket patches. Optimistic selection, server reconciliation, rollback on 409. |
-| `src/hooks/useHold.js` | Create/release hold, countdown state, `sendBeacon` on unload. |
-| `src/hooks/useWaitlistPosition.js` | Live position over the socket. |
-| `src/hooks/useAuth.js` | Session state, login/logout, role helpers. |
-| `src/store/selectionStore.js` | Zustand: selected seats, max-selection rule. |
-| `src/lib/seatColors.js` | Maps state → Tailwind classes using `shared/seatStates.js`. Colour logic in exactly one place. |
+| `index.html` | ⭐ Built at P7-1 (redefined). One file: markup, inline/linked CSS, and vanilla JS — no build step. Seat map (visual grid, per-seat status, selection), real-time status via polling `GET /shows/:id/seatmap` on an interval (per the user's own framing of D-53: "real-time updates via polling," not Socket.IO — Phase 6 itself hasn't been separately scoped down, only the client that would consume it), and enough of the booking flow (hold → confirm) to demonstrate the scored mechanisms live. Served by `server/src/app.js` via `express.static`, mounted at `/` — not a separate process, not a separate deploy target. |
 
 ---
 
