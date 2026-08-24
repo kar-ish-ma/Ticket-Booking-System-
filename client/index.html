@@ -376,7 +376,19 @@
     logout.style.marginLeft = '10px';
     logout.onclick = async () => {
       await api('/auth/logout', { method: 'POST' });
+      // WHY resetHoldUI()/clearConfirmationPanel() directly, not resetToShowView(): logging out
+      // leaves view-seatmap for view-auth, not back to itself -- resetToShowView() would refetch
+      // and re-show the seat map for whatever show was open, which is wrong the instant every
+      // subsequent request becomes unauthenticated. Reusing the same two cleanup calls without
+      // the seatmap-specific navigate step is what stops a hold's countdown from silently
+      // ticking in the background (and eventually firing its own resetToShowView(), refetching a
+      // seatmap for a show nobody's looking at) after the session that opened it is gone.
+      resetHoldUI();
+      clearConfirmationPanel();
       state.user = null;
+      state.currentEvent = null;
+      state.currentShow = null;
+      state.seats = [];
       renderWho();
       showView('view-auth');
     };
@@ -653,6 +665,61 @@
     stopCountdown();
   }
 
+  /**
+   * The other panel a stale hold/booking can leave visible: view-confirmation's QR/reference/
+   * seat table. WHY this is its own function rather than folded into resetHoldUI(): the two
+   * panels live on different views and get invalidated by different events (a hold panel goes
+   * stale when the hold ends; a confirmation panel goes stale when the BOOKING it describes is
+   * cancelled) -- resetToShowView() below needs both together, but showConfirmation() itself
+   * fully overwrites every field here on a fresh confirm/accept, so that path never needs to
+   * call this first.
+   */
+  function clearConfirmationPanel() {
+    state.lastBookingId = null;
+    setText('confRef', '');
+    document.getElementById('confQr').src = '';
+    document.getElementById('confSeats').textContent = '';
+    setText('confTotal', '');
+    setText('confError', '');
+  }
+
+  /**
+   * The single cleanup path for every action that ends a hold's or a booking's time on screen:
+   * releasing a hold, a hold's TTL lapsing client-side, and cancelling a confirmed booking. Each
+   * of those can leave EITHER panel (or both) showing something that's no longer true -- a
+   * cancelled booking's QR staying on screen because nothing ever hid it is the literal bug
+   * report this function exists to close; the same class of bug applies to a hold panel left
+   * open after the hold it describes no longer exists.
+   *
+   * WHY this does NOT also cover "booking confirmed" or "logout": both leave view-seatmap for a
+   * DIFFERENT view (confirmation, auth) that this function doesn't know about -- navigating here
+   * would land the user on the wrong screen. Both call resetHoldUI()/clearConfirmationPanel()
+   * directly instead, reusing the same two building blocks without this function's
+   * navigate-back-to-the-seat-map step, which only makes sense for its own three callers.
+   *
+   * WHY there's a fallback to view-events rather than just returning when state.currentShow is
+   * unset: a booking accepted via the public waitlist-claim link (openClaim(), no browse step)
+   * has no "show view" to go back to. Clearing the confirmation panel and stopping there would
+   * leave that now-blank section still .active and on screen -- the exact bug this function
+   * exists to fix, just relocated instead of fixed. Falling back to the event list (only if a
+   * session exists to browse with -- cancelling requires requireAuth, so state.user should
+   * always be set by the time this runs) keeps every call site landing somewhere real.
+   *
+   * @returns {Promise<void>}
+   */
+  async function resetToShowView() {
+    resetHoldUI();
+    clearConfirmationPanel();
+    if (state.currentShow) {
+      showView('view-seatmap');
+      await refreshSeatMap();
+      startPolling();
+    } else if (state.user) {
+      showView('view-events');
+      await loadEvents();
+    }
+  }
+
   document.getElementById('holdBtn').onclick = async () => {
     setText('holdError', '');
     try {
@@ -675,8 +742,7 @@
   document.getElementById('releaseBtn').onclick = async () => {
     if (!state.hold) return;
     try { await api('/holds/' + state.hold.id, { method: 'DELETE' }); } catch { /* best-effort */ }
-    resetHoldUI();
-    await refreshSeatMap();
+    await resetToShowView();
   };
 
   document.getElementById('confirmBtn').onclick = async () => {
@@ -684,14 +750,21 @@
     setText('holdError', '');
     try {
       const result = await api('/bookings/confirm', { method: 'POST', body: { holdId: state.hold.id } });
+      // WHY resetHoldUI() here, not resetToShowView(): this succeeds by leaving view-seatmap for
+      // view-confirmation, not returning to it -- resetToShowView() would refetch and re-show the
+      // seat map for a fraction of a second before showConfirmation() below navigated away again.
+      // showConfirmation() itself overwrites every field the confirmation panel owns, so there's
+      // nothing stale left for clearConfirmationPanel() to clean up first.
       resetHoldUI();
       showConfirmation(result);
     } catch (err) {
-      setText('holdError', err.message);
+      // WHY resetToShowView() runs BEFORE the error is displayed, not after: resetHoldUI() (which
+      // resetToShowView() calls) clears #holdError as part of resetting the panel -- setting the
+      // message first and then wiping it out from underneath itself would silently swallow it.
       if (err.code === 'HOLD_EXPIRED') {
-        resetHoldUI();
-        await refreshSeatMap();
+        await resetToShowView();
       }
+      setText('holdError', err.message);
     }
   };
 
@@ -703,15 +776,17 @@
   function startCountdown() {
     stopCountdown();
     const el = document.getElementById('countdown');
-    function tick() {
+    async function tick() {
       const msLeft = new Date(state.hold.expiresAt).getTime() - Date.now();
       if (msLeft <= 0) {
-        el.textContent = '0:00';
-        el.className = 'red';
+        // WHY no el.textContent/el.className update here, unlike before: resetToShowView() ->
+        // resetHoldUI() hides #holdPanel (which #countdown lives inside) immediately below, so
+        // writing "0:00" to an element about to be hidden is dead work.
         stopCountdown();
+        // Same ordering reason as confirmBtn's HOLD_EXPIRED catch: resetToShowView() clears
+        // #holdError via resetHoldUI(), so the message has to be set AFTER it returns, not before.
+        await resetToShowView();
         setText('holdError', 'Hold expired — the seats have been released.');
-        resetHoldUI();
-        refreshSeatMap();
         return;
       }
       const secs = Math.floor(msLeft / 1000);
@@ -749,9 +824,27 @@
     if (!state.lastBookingId) return;
     setText('confError', '');
     try {
-      await api('/bookings/' + state.lastBookingId + '/cancel', { method: 'POST' });
-      setText('confError', 'Booking cancelled and refunded. Seats released (or offered to the waitlist).');
+      const result = await api('/bookings/' + state.lastBookingId + '/cancel', { method: 'POST' });
+      // WHY resetToShowView() runs on ANY 2xx result, not just result.cancelled === true:
+      // POST /bookings/:id/cancel is idempotent and always returns 200, even for an
+      // already-cancelled booking (bookings.controller.js's own doc comment on this route) --
+      // {cancelled: false} means "nothing changed," not "this failed." Either way the booking
+      // this panel describes is no longer an active CONFIRMED booking, so its QR/reference has
+      // to come off screen regardless of which case this was.
+      await resetToShowView();
+      // Set after resetToShowView() returns, not before -- see confirmBtn's HOLD_EXPIRED catch
+      // for why (resetHoldUI() clears #holdError as part of the reset).
+      setText(
+        'holdError',
+        result.cancelled
+          ? 'Booking cancelled and refunded. Seats released (or offered to the waitlist).'
+          : 'This booking was already cancelled.'
+      );
     } catch (err) {
+      // WHY no resetToShowView() here: a failed cancel changed nothing server-side -- the
+      // booking is still CONFIRMED and its QR is still valid. Clearing the panel on an error
+      // would be the same class of bug from the other direction: showing "cancelled" for a
+      // booking that wasn't. The error surfaces on the panel that's still accurate instead.
       setText('confError', err.message);
     }
   };
