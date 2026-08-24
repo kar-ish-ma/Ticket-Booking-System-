@@ -1,13 +1,15 @@
 /**
  * bookings.service.js
  *
- * Owns hold→booking orchestration: confirmBooking() is one of CLAUDE.md's four named hard
- * mechanisms — its own WALKTHROUGH comment below covers the happy path and what the loser of a
- * race experiences.
+ * Owns hold→booking orchestration (confirmBooking(), one of CLAUDE.md's four named hard
+ * mechanisms) and, since P4-8, its inverse (cancelBooking()). Both carry their own numbered
+ * WALKTHROUGH-style comments.
  *
- * Does NOT own: the SQL itself (bookings.queries.js), payment capture (payments.service.js), or
- * HTTP concerns (bookings.controller.js). Booking history/detail/PDF (P4-9) and cancellation
- * (P4-8) are separate, later tasks — this file grows to hold them, it isn't rewritten for them.
+ * Does NOT own: the SQL itself (bookings.queries.js), payment capture/refund
+ * (payments.service.js), or HTTP concerns (bookings.controller.js). Booking history/detail/PDF
+ * (P4-9) is a separate, later task — this file grows to hold it, it isn't rewritten for it.
+ * cancelBooking()'s waitlist/offer routing (§7.2's `OFFER_RESERVED` branch, P5-3) is also deferred
+ * — see that function's own comment for exactly where it slots in.
  */
 
 import crypto from 'node:crypto';
@@ -151,4 +153,84 @@ export async function confirmBooking({ holdId, userId }) {
 export async function loadHoldForOwnershipFromConfirmBody(req) {
   const hold = await holdsQueries.findSeatHoldById(pool, req.body.holdId);
   return hold ? { ownerId: hold.userId } : null;
+}
+
+/**
+ * WALKTHROUGH: cancelBooking(), and why three concurrent cancel attempts is a normal case
+ *
+ * Same unconditional-calls style as holds.service.js#releaseHold() (P3-4), not an early-return
+ * guard: every step below runs every time this is called, and each step's OWN predicate is what
+ * makes a repeat call a no-op. A double-click on "Cancel," or a retried request after a dropped
+ * response, experiences exactly the same idempotency §5.2 already established for holds -- no new
+ * pattern to learn here, the same one reused.
+ *
+ * 1. bookings.queries.js#markBookingCancelled() -- `WHERE status = 'CONFIRMED'` is the gate. First
+ *    call: matches, flips to CANCELLED, stamps cancelled_at. Second call: the row is already
+ *    CANCELLED, matches nothing, returns null -- this is what makes the function's own return
+ *    value (`cancelled: booking !== null`) accurately report "did THIS call do the cancelling."
+ * 2. payments.service.js#refund() (P4-1) -- called unconditionally, not gated on step 1's result.
+ *    Its own `WHERE status = 'CAPTURED'` predicate is independently idempotent, already falsified
+ *    live at P4-1. A second cancelBooking() call refunds nothing new; no new code on either side
+ *    had to be written to make that composition safe.
+ * 3. assertTransition(BOOKED, AVAILABLE) -- extends the D-40/D-44 reasoning to a third call site
+ *    (Decisions Ledger D-45): this is also a transition decided in application code before a
+ *    single-row UPDATE, not a multi-branch predicate the way holds.queries.js#acquireSeats needs
+ *    one. Trivially true today for the same reason D-44 gave for confirmBooking().
+ * 4. bookings.queries.js#releaseBookedSeats() -- the §7.2 counterpart to confirmHeldSeats(). A
+ *    second call's `WHERE state = 'BOOKED'` matches nothing (already AVAILABLE) -- empty array,
+ *    not an error.
+ * 5. **Group the released seats by categoryId.** §7.2's own cancellation diagram frames the
+ *    decision this way -- "for each category group: queue empty -> AVAILABLE; queue head ->
+ *    OFFER_RESERVED" -- because different categories of the SAME cancelled booking can have
+ *    different waitlist depths. Every group resolves to AVAILABLE here, unconditionally: this is
+ *    where Phase 5's P5-3 inserts its branch, checking each group's waitlist head-of-queue
+ *    (`FOR UPDATE SKIP LOCKED`, §7.4) and routing non-empty groups to OFFER_RESERVED instead. WHY
+ *    that second branch has to exist at all, not just "release everything, always" — Decisions
+ *    Ledger D-7: a seat freed by a cancellation must never re-enter the public pool while a
+ *    waitlist offer on it is live, or a random browser snipes the seat the queue was promised.
+ *    Grouping by category here, even with only one branch implemented, is what lets P5-3 slot in
+ *    without restructuring this function.
+ *
+ * @param {{ bookingId: string }} params
+ * @returns {Promise<{ cancelled: boolean, releasedSeatsByCategory: Map<string, Array<{ seatId: string, categoryId: string, showId: string }>> }>}
+ * @throws never; cancelling an already-cancelled or nonexistent-under-CONFIRMED booking is a
+ *   normal, idempotent outcome (`cancelled: false`), not an error
+ */
+export async function cancelBooking({ bookingId }) {
+  return withTransaction(async (client) => {
+    const booking = await bookingsQueries.markBookingCancelled(client, bookingId);
+
+    await paymentsService.refund(client, bookingId);
+
+    // See this function's own WALKTHROUGH step 3 / Decisions Ledger D-45.
+    assertTransition(SEAT_STATES.BOOKED, SEAT_STATES.AVAILABLE);
+
+    const releasedSeats = await bookingsQueries.releaseBookedSeats(client, bookingId);
+
+    const releasedSeatsByCategory = new Map();
+    for (const seat of releasedSeats) {
+      const group = releasedSeatsByCategory.get(seat.categoryId) ?? [];
+      group.push(seat);
+      releasedSeatsByCategory.set(seat.categoryId, group);
+    }
+    // WHY every group above resolves to AVAILABLE, unconditionally, rather than checking the
+    // waitlist here: that's §7.2's OFFER_RESERVED branch, deliberately deferred to Phase 5's
+    // P5-3 -- see this function's own WALKTHROUGH step 5 and Decisions Ledger D-7 for why the
+    // grouping already exists even though only one outcome is implemented today.
+
+    return { cancelled: booking !== null, releasedSeatsByCategory };
+  });
+}
+
+/**
+ * requireOwnership.js's loader shape, for POST /bookings/:id/cancel -- reads req.params.id (the
+ * bookingId), mirroring holds.service.js#loadHoldForOwnership's shape exactly for the same kind
+ * of resource-ownership check, just against bookings instead of holds.
+ *
+ * @param {import('express').Request} req
+ * @returns {Promise<{ ownerId: string } | null>}
+ */
+export async function loadBookingForOwnership(req) {
+  const booking = await bookingsQueries.findBookingById(pool, req.params.id);
+  return booking ? { ownerId: booking.userId } : null;
 }

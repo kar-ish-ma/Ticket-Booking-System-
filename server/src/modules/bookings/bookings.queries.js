@@ -1,19 +1,23 @@
 /**
  * bookings.queries.js
  *
- * Owns the raw SQL for turning a hold into a booking — `confirmHeldSeats()` is the atomic
- * §6.5 statement this whole module exists around, the same way `acquireSeats()` is the reason
- * `holds.queries.js` exists. Also owns reading a hold's currently-held seats (with pricing) and
- * writing the `bookings`/`booking_seats` rows around that atomic step.
+ * Owns the raw SQL for turning a hold into a booking (`confirmHeldSeats()` — the atomic §6.5
+ * statement this file was originally built around) and, since P4-8, cancelling one back out
+ * (`releaseBookedSeats()` — the symmetric §7.2 statement). Also owns reading a hold's or a
+ * booking's seats (with pricing/category) and writing the `bookings`/`booking_seats` rows around
+ * those atomic steps.
  *
- * Does NOT own: deciding whether a short `confirmHeldSeats()` result means rollback (that's
- * bookings.service.js#confirmBooking — the caller's job, same split as
- * holds.queries.js#acquireSeats / holds.service.js#createHold), payment capture
- * (payments.service.js), or seat-hold bookkeeping (holds.queries.js#markSeatHoldReleased, reused
- * as-is for the `'CONVERTED'` outcome).
+ * Does NOT own: deciding whether a short `confirmHeldSeats()` result means rollback, or what a
+ * cancellation's freed seats should become PER CATEGORY (`AVAILABLE` vs `OFFER_RESERVED`,
+ * §7.2/D-7) — both are bookings.service.js's job, same split as holds.queries.js#acquireSeats /
+ * holds.service.js#createHold. Also does not own payment capture/refund (payments.service.js) or
+ * seat-hold bookkeeping (holds.queries.js#markSeatHoldReleased, reused as-is for `'CONVERTED'`).
  *
  * Invariant: every function here takes a `client` that must already be inside a transaction (see
  * withTransaction.js's header for why calling `pool.query` here instead would silently escape it).
+ * `findBookingById` is the one read-only exception, accepting a bare `pool` too, for
+ * `loadBookingForOwnership`'s route-middleware use — same dual-accept pattern as
+ * holds.queries.js#findSeatHoldById.
  */
 
 function mapBookingRow(row) {
@@ -155,4 +159,64 @@ export async function confirmHeldSeats(client, { holdId, bookingId }) {
     [bookingId, holdId]
   );
   return result.rows.map((row) => row.id);
+}
+
+/**
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {string} bookingId
+ * @returns {Promise<object | null>}
+ */
+export async function findBookingById(client, bookingId) {
+  const result = await client.query(`SELECT * FROM bookings WHERE id = $1`, [bookingId]);
+  return mapBookingRow(result.rows[0]);
+}
+
+/**
+ * Marks the booking cancelled. `status = 'CONFIRMED'` in the WHERE clause is what makes a second
+ * call a no-op instead of re-stamping `cancelled_at` — same idiom as
+ * holds.queries.js#markSeatHoldReleased and payments.queries.js#markPaymentRefunded: the
+ * predicate IS the idempotency, not a separate "already cancelled" branch.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} bookingId
+ * @returns {Promise<object | null>} the cancelled booking, or `null` if it wasn't `CONFIRMED`
+ *   (already cancelled, or never reached that status) — a normal, idempotent outcome
+ */
+export async function markBookingCancelled(client, bookingId) {
+  const result = await client.query(
+    `UPDATE bookings SET status = 'CANCELLED', cancelled_at = now()
+      WHERE id = $1 AND status = 'CONFIRMED'
+     RETURNING *`,
+    [bookingId]
+  );
+  return mapBookingRow(result.rows[0]);
+}
+
+/**
+ * The §7.2 counterpart to confirmHeldSeats(): one statement, no read-then-write, releasing every
+ * seat this booking still owns back to AVAILABLE. `category_id` is in the RETURNING list
+ * specifically so bookings.service.js#cancelBooking can group the result by category without a
+ * second query — §7.2's cancellation flow decides AVAILABLE-vs-OFFER_RESERVED PER CATEGORY GROUP,
+ * not per booking, so the grouping key has to survive this call even though only one branch
+ * (AVAILABLE, unconditionally) is implemented as of P4-8.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} bookingId
+ * @returns {Promise<Array<{ seatId: string, categoryId: string, showId: string }>>} seats
+ *   actually released — empty is a normal, idempotent outcome (already cancelled, or this
+ *   booking never reached BOOKED seats), never an error
+ */
+export async function releaseBookedSeats(client, bookingId) {
+  const result = await client.query(
+    `UPDATE show_seats
+        SET state = 'AVAILABLE', booking_id = NULL, version = version + 1, updated_at = now()
+      WHERE booking_id = $1 AND state = 'BOOKED'
+     RETURNING seat_id, category_id, show_id`,
+    [bookingId]
+  );
+  return result.rows.map((row) => ({
+    seatId: row.seat_id,
+    categoryId: row.category_id,
+    showId: row.show_id,
+  }));
 }
