@@ -66,5 +66,20 @@ jobs:
       # No test runner exists yet (Vitest lands with the first real tests, Phase 1 onward). A
       # bare `npm test` would fail the build over a missing script rather than a real problem;
       # --if-present keeps this step green until then and needs no changes once a test script
-      # actually exists.
+      # actually exists. Runs both the unit config (tests/unit/**) and the e2e config
+      # (tests/e2e/**, against the Postgres service above) -- see server/vitest.unit.config.js
+      # and vitest.e2e.config.js.
       - run: npm test --if-present
+
+      # WHY a separate 3x loop instead of trusting one green run: docs/PROJECT_PROMPT.md §6.6's
+      # own risk register calls out "concurrency tests flaky in CI" -- a race test that passes
+      # once could still be racy in a way a single run doesn't happen to expose. Running the
+      # headline suite (50 parallel holds, the overlapping-set race, the D-14 OFFER_RESERVED
+      # check) three times in a row is the concrete falsification CLAUDE.md's testing standard
+      # asks for: exact counts, every time, not "seemed fine once."
+      - name: Concurrency suite (3x, to catch flakiness)
+        run: |
+          for i in 1 2 3; do
+            echo "--- test:concurrency run $i/3 ---"
+            npm run test:concurrency
+          done

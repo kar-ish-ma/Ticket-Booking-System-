@@ -634,15 +634,19 @@ RETURNING id, category_id;
 
 ### 6.6 Required proof tests
 
-| Test | Assertion |
-|---|---|
-| 50 parallel `POST /holds` for seat A1 | exactly 1 × `201`, 49 × `409`; DB has exactly one `HELD` row |
-| 20 parallel confirms of one hold | exactly 1 booking created |
-| Overlapping multi-seat holds `{A1,A2}` vs `{A2,A3}` | exactly one succeeds; loser holds **zero** seats |
-| Hold expiry with all workers stopped | `GET /shows/:id/seatmap` still reports `AVAILABLE` |
-| 10 waitlisted users racing one offer | 1 conversion, 9 × `410 OFFER_INVALID` |
-| Confirm at `expires_at + 1ms` | `410 HOLD_EXPIRED`, seat not booked |
-| Public `POST /holds` on an `OFFER_RESERVED` seat after its current `expires_at` but before `reserved_until` (D-14) | `409 SEATS_UNAVAILABLE`; seat stays `OFFER_RESERVED`, not reclaimed — proves offer exclusivity survives a stale per-attempt deadline |
+| Test | Assertion | Lives at |
+|---|---|---|
+| 50 parallel `POST /holds` for seat A1 | exactly 1 × `201`, 49 × `409`; DB has exactly one `HELD` row | `tests/e2e/concurrency.test.js` (P3-9) |
+| 20 parallel confirms of one hold | exactly 1 booking created | `tests/e2e/bookingFlow.test.js` (Phase 4 — needs `bookings.service.js#confirmBooking`, which doesn't exist yet as of P3-9) |
+| Overlapping multi-seat holds `{A1,A2}` vs `{A2,A3}` | exactly one succeeds; loser holds **zero** seats | `tests/e2e/concurrency.test.js` (P3-9) |
+| Hold expiry with all workers stopped | `GET /shows/:id/seatmap` still reports `AVAILABLE` | `tests/e2e/holdExpiry.test.js` (P3-9) |
+| 10 waitlisted users racing one offer | 1 conversion, 9 × `410 OFFER_INVALID` | `tests/e2e/waitlist.test.js` (Phase 5 — needs the waitlist/offers module, which doesn't exist yet as of P3-9) |
+| Confirm at `expires_at + 1ms` | `410 HOLD_EXPIRED`, seat not booked | `tests/e2e/bookingFlow.test.js` (Phase 4 — same reason as the row above) |
+| Public `POST /holds` on an `OFFER_RESERVED` seat after its current `expires_at` but before `reserved_until` (D-14) | `409 SEATS_UNAVAILABLE`; seat stays `OFFER_RESERVED`, not reclaimed — proves offer exclusivity survives a stale per-attempt deadline | `tests/e2e/concurrency.test.js` (P3-9) |
+
+Three of these six needed a module later phases haven't built yet as of P3-9 (bookings, waitlist/
+offers) — deferred to the phase that builds it, not dropped; tracked explicitly in
+`docs/BUILD_LOG.md`'s P3-9 row rather than silently left off this table.
 
 Run against a **local `ticket_booking_test` database** — the real Postgres you already have, with tables truncated between tests. Never mock the pool: a mock has no row locks, so a mocked race test proves nothing. Stop the dev server before running these; 4 GB does not stretch to both.
 

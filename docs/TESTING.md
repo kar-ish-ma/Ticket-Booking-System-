@@ -603,3 +603,92 @@ primary key), never on which seat A used to govern, so it is structurally incapa
 B's row. Had either predicate instead been written as a join through the *current* seat rather
 than the hold's own identity, this scenario is exactly where that bug would surface: B's row
 silently flipped to `RELEASED` while its seat sat there still genuinely held.
+
+### P3-9 — the permanent Vitest/Supertest harness, and the concurrency proof suite
+
+Everything from P0-4 through P3-4 above was proven live with throwaway scripts because no
+Vitest-DB harness existed yet (Decisions Ledger D-34). This task builds that harness for real and
+uses it to make the headline concurrency proofs permanent, automated regression tests instead of
+one-off transcripts.
+
+**Two Vitest configs, not one** (`server/vitest.unit.config.js`, `server/vitest.e2e.config.js`):
+the unit suite (`tests/unit/**`) has no shared state and runs fully parallel; the e2e suite
+(`tests/e2e/**`) shares one real `ticket_booking_test` database across every file and truncates it
+between tests, so `vitest.e2e.config.js` sets `fileParallelism: false` — two files truncating the
+same tables concurrently would corrupt each other's fixtures.
+
+**`tests/setup/testEnv.js`**, loaded via the e2e config's `setupFiles`, rewrites
+`process.env.DATABASE_URL` to the `_test` variant *before* any test file's own imports reach
+`src/db/pool.js`. It checks whether the database name already ends in `_test` before appending —
+CI's Postgres service container is already named `ticket_booking_test`
+(`.github/workflows/ci.yml`), so appending unconditionally would derive
+`ticket_booking_test_test`, a database that doesn't exist.
+
+**`tests/setup/testDb.js`** provides `migrateTestDb()`, `truncateAllTables()`, and
+`closeTestDb()`. Both of the first two call `assertTestDatabase()` first — a live
+`SELECT current_database()` check that refuses to run unless the name ends in `_test`, a
+DB-level backstop beyond `testEnv.js`'s own string derivation, since `truncateAllTables()` is the
+single most destructive statement in the whole suite.
+
+**`tests/setup/fixtures.js`** drives the real HTTP sequence (venue → category → seats → event →
+show → publish) so `buildBookableShow()` gives every e2e test a ready-to-book show in one call.
+
+**Local run, real `ticket_booking_test` database, no dev server or Vite running at the same
+time** (per this file's own "stop the dev server first" rule):
+
+```
+> npm run test:unit
+ Test Files  1 passed (1)
+      Tests  31 passed (31)
+
+> npm run test:e2e
+ Test Files  2 passed (2)
+      Tests  4 passed (4)
+```
+
+`tests/e2e/concurrency.test.js` covers the three of §6.6's six scenarios buildable through P3-4
+(no bookings or waitlist/offers module exists yet — the other three move to Phase 4/5, see
+`docs/PROJECT_PROMPT.md` §6.6's updated table and the Phase 3 debt note in `docs/BUILD_LOG.md`):
+
+- 50 parallel `POST /holds` for one seat → exactly one `201`, 49 `409`s, exactly one `HELD` row
+- The overlapping `{A1,A2}` vs `{A2,A3}` race → one full winner, the loser's `seat_holds` row
+  count is genuinely zero (not just its HTTP response), and the final seat states are always
+  exactly one of the two valid configurations
+- A public `POST /holds` against an `OFFER_RESERVED` seat whose current `expires_at` has lapsed
+  but whose `reserved_until` has not (D-14) → `409`, the seat completely untouched
+
+`tests/e2e/holdExpiry.test.js` re-proves P2-7's lazy-expiry claim as a permanent test, still with
+zero schedulers of any kind running (Layers 2/3 remain deferred): a `HELD` seat manually rewound
+past its `expires_at` still reads `AVAILABLE` on `GET /shows/:id/seatmap`, while the raw stored row
+stays `HELD` — the read computed the truth, it didn't write it.
+
+**Falsified live before being trusted**, the same convention as P3-1's `SEAT_TRANSITIONS` proof:
+`holds.queries.js#acquireSeats`'s state predicate was temporarily stripped down to
+`WHERE s.id = c.id` (every OR branch removed) and `npm run test:concurrency` re-run:
+
+```
+ FAIL  tests/e2e/concurrency.test.js (3 tests | 3 failed)
+   × exactly one 201, the rest 409, and the DB agrees
+     expected [ …(50) ] to have a length of 1 but got 50
+   × {A1,A2} vs {A2,A3} racing on A2 -> one full winner, the other holds zero seats
+     expected [ …(2) ] to have a length of 1 but got 2
+   × reserved_until in the future keeps the seat unacquirable even past expires_at
+     expected 201 to be 409
+```
+
+All three failed for the expected reason — every racer won the 50-way race, both sides of the
+overlapping-set race won, and the `OFFER_RESERVED` seat was handed straight out. The predicate was
+then restored and `git status` confirmed the file byte-for-byte unchanged before this suite was
+considered done — the same discipline the project applies everywhere it claims a mechanism is
+proven, not merely present.
+
+**`npm run test:concurrency`, run 3 times in a row** (matching what CI's own loop does — see
+`docs/BUILD_LOG.md`'s Phase 3 debt note on flaky-concurrency risk):
+
+```
+--- run 1 ---  Test Files  1 passed (1)  Tests  3 passed (3)
+--- run 2 ---  Test Files  1 passed (1)  Tests  3 passed (3)
+--- run 3 ---  Test Files  1 passed (1)  Tests  3 passed (3)
+```
+
+`npm run lint` clean throughout.

@@ -17,6 +17,7 @@
     "db:reset": "npm run migrate:reset --workspace=server",
     "db:seed": "npm run seed --workspace=server",
     "test": "npm run test --workspace=server",
+    "test:concurrency": "npm run test:concurrency --workspace=server",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
