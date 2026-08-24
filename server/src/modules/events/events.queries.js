@@ -155,3 +155,46 @@ export async function listPublishedEvents(client, { type, city, dateFrom, dateTo
     pageSize: PAGE_SIZE,
   };
 }
+
+/**
+ * Per-category rollup across EVERY show of one event: how many of that category's seats are
+ * currently `BOOKED` (via `booking_seats`, so a cancelled-then-refunded seat correctly drops back
+ * out — see 004_bookings.sql's own header on why `booking_seats` is the historical price record
+ * and `show_seats.state`/`booking_id` is the current occupant), and the revenue actually charged
+ * for them (`booking_seats.price_cents`, not `show_prices.price_cents` — a show's price can change
+ * after a booking already locked one in). `total_seats` is every `show_seats` row for that
+ * category regardless of state, so occupancy% has a denominator that doesn't shrink as seats sell.
+ *
+ * WHY joined through `show_seats` rather than `booking_seats` directly: a category with zero
+ * bookings still needs to appear (with `sold: 0`) so `total_seats`/occupancy are correct — an
+ * INNER join from `booking_seats` would silently drop it.
+ *
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {string} eventId
+ * @returns {Promise<Array<{ categoryId: string, categoryName: string, totalSeats: number, sold: number, revenueCents: number }>>}
+ */
+export async function getEventSummaryByCategory(client, eventId) {
+  const result = await client.query(
+    `SELECT sc.id AS category_id, sc.name AS category_name,
+            COUNT(DISTINCT ss.id)::int AS total_seats,
+            COUNT(bs.booking_id)::int AS sold,
+            COALESCE(SUM(bs.price_cents), 0)::int AS revenue_cents
+       FROM shows s
+       JOIN show_seats ss ON ss.show_id = s.id
+       JOIN seat_categories sc ON sc.id = ss.category_id
+       LEFT JOIN booking_seats bs
+              ON bs.show_seat_id = ss.id
+             AND bs.booking_id IN (SELECT id FROM bookings WHERE status = 'CONFIRMED')
+      WHERE s.event_id = $1
+      GROUP BY sc.id, sc.name
+      ORDER BY sc.name`,
+    [eventId]
+  );
+  return result.rows.map((row) => ({
+    categoryId: row.category_id,
+    categoryName: row.category_name,
+    totalSeats: row.total_seats,
+    sold: row.sold,
+    revenueCents: row.revenue_cents,
+  }));
+}

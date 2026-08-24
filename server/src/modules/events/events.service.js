@@ -63,6 +63,45 @@ export async function browseEvents(filters) {
 }
 
 /**
+ * Organiser summary (§9's `GET /events/:id/summary`, scoped down to what's actually built): sold
+ * seats, revenue, and occupancy per category, aggregated across every show this event has. Does
+ * NOT include waitlist depth (§9's own list also asks for it) — the waitlist module has no
+ * per-show aggregate read today, only per-user position (waitlist.queries.js#findQueuePosition);
+ * building one wasn't worth the time against the deadline's higher-priority items. Ownership is
+ * the route's job (requireOwnership + loadEventForOwnership, same as PATCH /events/:id), not
+ * re-checked here.
+ *
+ * @param {string} eventId
+ * @returns {Promise<{ event: object, categories: Array<{ categoryId: string, categoryName: string, totalSeats: number, sold: number, revenueCents: number, occupancyPercent: number }>, totals: { totalSeats: number, sold: number, revenueCents: number, occupancyPercent: number } }>}
+ * @throws {NotFoundError} if no event has this id
+ */
+export async function getEventSummary(eventId) {
+  const event = await eventsQueries.findEventById(pool, eventId);
+  if (!event) throw new NotFoundError('Event not found');
+
+  const rows = await eventsQueries.getEventSummaryByCategory(pool, eventId);
+  const categories = rows.map((row) => ({
+    ...row,
+    occupancyPercent: row.totalSeats === 0 ? 0 : Math.round((row.sold / row.totalSeats) * 1000) / 10,
+  }));
+
+  const totalSeats = rows.reduce((sum, row) => sum + row.totalSeats, 0);
+  const sold = rows.reduce((sum, row) => sum + row.sold, 0);
+  const revenueCents = rows.reduce((sum, row) => sum + row.revenueCents, 0);
+
+  return {
+    event,
+    categories,
+    totals: {
+      totalSeats,
+      sold,
+      revenueCents,
+      occupancyPercent: totalSeats === 0 ? 0 : Math.round((sold / totalSeats) * 1000) / 10,
+    },
+  };
+}
+
+/**
  * The `loadResource` requireOwnership.js expects: fetch the resource, report who owns it, or
  * null if it doesn't exist at all. Kept separate from getEvent() because that one throws
  * NotFoundError on a miss (right for a route handler); requireOwnership.js wants a plain null so

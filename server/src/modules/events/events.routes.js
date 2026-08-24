@@ -91,6 +91,31 @@ eventsRouter.get('/', validate(browseEventsSchema, 'query'), eventsController.br
  *       404: { description: No event with this id (NOT_FOUND). }
  */
 eventsRouter.get('/:id', eventsController.getEvent);
+
+/**
+ * @openapi
+ * /api/v1/events/{id}/summary:
+ *   get:
+ *     summary: >
+ *       Organiser revenue/occupancy summary, per category, aggregated across every show this
+ *       event has (ORGANISER, must own the event). Does not include waitlist depth — see
+ *       events.service.js#getEventSummary's own header.
+ *     tags: [Events]
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: "{ event, categories: [{categoryId, categoryName, totalSeats, sold, revenueCents, occupancyPercent}], totals: {...} }" }
+ *       403: { description: Not this event's organiser (FORBIDDEN). }
+ *       404: { description: No event with this id (NOT_FOUND). }
+ */
+eventsRouter.get(
+  '/:id/summary',
+  requireAuth,
+  requireRole('ORGANISER'),
+  requireOwnership(eventsService.loadEventForOwnership),
+  eventsController.getEventSummary
+);
+
 eventsRouter.patch(
   '/:id',
   requireAuth,
