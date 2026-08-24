@@ -25,161 +25,256 @@
     --bg: #0f1220;
     --panel: #171b2e;
     --panel-2: #1f2440;
+    --panel-3: #262b4d;
     --border: #2c3156;
     --text: #e8eaf6;
     --muted: #9aa0c3;
+    /* WHY one accent, not several: every interactive/brand moment (buttons, links, focus rings,
+       the "selected seat" outline, the active filter/tab) reads off this single variable.
+       --danger/--warn stay separate on purpose -- they're semantic status colours (an error, a
+       countdown running low), not competing brand accents. */
     --accent: #6366f1;
-    --accent-2: #22c55e;
+    --accent-hover: #7b7df6;
     --danger: #ef4444;
     --warn: #f59e0b;
+    /* A small spacing scale so padding/margins read as multiples of one unit instead of ad hoc
+       pixel values scattered through the sheet. */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --radius: 10px;
+    --radius-sm: 7px;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+      sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    font-size: 15px;
+    line-height: 1.5;
     background: var(--bg);
     color: var(--text);
   }
+  h1, h2, h3 { line-height: 1.25; font-weight: 700; margin: 0; }
   header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 20px;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
     background: var(--panel);
     border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
     z-index: 10;
   }
-  header h1 { font-size: 18px; margin: 0; cursor: pointer; }
-  header .who { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
-  main { max-width: 960px; margin: 0 auto; padding: 20px; }
+  .brand-block { display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+  header h1 { font-size: 19px; letter-spacing: -0.01em; }
+  .tagline { font-size: 12px; color: var(--muted); margin: 0; }
+  header .who { display: flex; align-items: center; gap: var(--space-3); font-size: 14px; color: var(--muted); }
+  .who .name-chip { background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; }
+  main { max-width: 960px; margin: 0 auto; padding: var(--space-5); }
   section { display: none; }
   section.active { display: block; }
-  h2 { margin-top: 0; }
+  h2 { font-size: 20px; margin-bottom: var(--space-4); }
+  h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin: var(--space-5) 0 var(--space-3); }
   .card {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 16px;
-    margin-bottom: 14px;
+    border-radius: var(--radius);
+    padding: var(--space-4);
+    margin-bottom: var(--space-4);
   }
   button {
     background: var(--accent);
     color: white;
     border: none;
-    border-radius: 6px;
-    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    padding: 9px 16px;
     font-size: 14px;
+    font-weight: 600;
     cursor: pointer;
+    transition: background-color .15s ease, transform .1s ease, opacity .15s ease, border-color .15s ease;
   }
-  button:disabled { opacity: 0.45; cursor: not-allowed; }
-  button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+  button.secondary:hover:not(:disabled) { background: var(--panel-3); border-color: var(--accent); }
+  button.secondary.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.danger { background: var(--danger); }
+  button.danger:hover:not(:disabled) { background: #f2716f; }
   input, select {
     background: var(--panel-2);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 6px;
-    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    padding: 9px 10px;
     font-size: 14px;
     width: 100%;
+    transition: border-color .15s ease;
   }
-  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
-  .row { display: flex; gap: 10px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin: var(--space-3) 0 4px; }
+  .row { display: flex; gap: var(--space-3); }
   .row > * { flex: 1; }
-  .error { color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 1em; }
+  .error { color: var(--danger); font-size: 13px; margin-top: var(--space-2); min-height: 1em; }
   .muted { color: var(--muted); font-size: 13px; }
-  a.link { color: var(--accent); cursor: pointer; text-decoration: underline; font-size: 13px; }
+  a.link {
+    color: var(--accent);
+    cursor: pointer;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+    display: inline-block;
+    margin-bottom: var(--space-3);
+  }
+  a.link:hover { text-decoration: underline; }
+
+  /* Loading / empty states -- one shared look so "nothing to show yet" and "still fetching"
+     read as deliberate states, not blank space where content forgot to load. */
+  .state-msg { text-align: center; color: var(--muted); padding: var(--space-6) 0; font-size: 14px; }
+  .state-msg.loading::before {
+    content: '';
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    margin-right: var(--space-2);
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    vertical-align: -2px;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   .event-card {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: var(--space-3);
     cursor: pointer;
+    transition: border-color .15s ease, transform .1s ease;
   }
-  .event-card:hover { border-color: var(--accent); }
+  .event-card:hover { border-color: var(--accent); transform: translateY(-1px); }
   .badge {
     display: inline-block;
     font-size: 11px;
-    padding: 2px 8px;
+    font-weight: 700;
+    letter-spacing: .03em;
+    padding: 3px 9px;
     border-radius: 999px;
     background: var(--panel-2);
     color: var(--muted);
-    margin-right: 6px;
+    margin-right: var(--space-2);
   }
-  .filters { display: flex; gap: 8px; margin-bottom: 14px; }
-  .filters button { background: var(--panel-2); border: 1px solid var(--border); }
-  .filters button.on { background: var(--accent); border-color: var(--accent); }
+  .filters { display: flex; gap: var(--space-2); margin-bottom: var(--space-4); }
+  .filters button { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+  .filters button:hover:not(.on) { border-color: var(--accent); }
+  .filters button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   .show-pick {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 10px;
+    padding: var(--space-3);
     border: 1px solid var(--border);
     border-radius: 8px;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-2);
     cursor: pointer;
+    transition: border-color .15s ease;
   }
   .show-pick:hover { border-color: var(--accent); }
 
+  /* The screen bar: a shallow curve (two-value border-radius) and a faint accent glow underneath
+     is enough to read as "screen this way" without a literal cutout shape. */
   #screen {
-    width: 60%;
-    max-width: 400px;
-    margin: 0 auto 24px;
+    width: min(70%, 420px);
+    margin: 0 auto var(--space-5);
     text-align: center;
-    padding: 6px;
-    border-radius: 4px;
-    background: var(--panel-2);
+    padding: var(--space-2);
+    border-radius: 999px / 10px;
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--border);
+    box-shadow: 0 10px 20px -14px var(--accent);
     color: var(--muted);
     font-size: 11px;
-    letter-spacing: 2px;
+    font-weight: 700;
+    letter-spacing: .25em;
     text-transform: uppercase;
   }
   #seatgrid {
     display: grid;
     gap: 6px;
     justify-content: center;
-    margin: 0 auto 16px;
+    margin: 0 auto var(--space-5);
+  }
+  /* Row-label gutter: the first column of the SAME grid the seats live in (renderSeatMap() shifts
+     every seat's own grid-column by one to make room), so a label always lands pixel-aligned with
+     its row without a second, separately-scrolling layout. */
+  .row-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
   }
   .seat {
     width: 30px;
     height: 30px;
-    border-radius: 5px;
+    border-radius: 8px;
     border: 2px solid transparent;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 10px;
+    font-weight: 600;
     cursor: pointer;
     color: white;
     user-select: none;
+    transition: transform .1s ease, border-color .15s ease;
   }
   .seat.AVAILABLE { background: #2f3358; }
+  .seat.AVAILABLE:hover { transform: scale(1.08); border-color: var(--accent); }
   .seat.HELD { background: #4b3410; cursor: not-allowed; }
   .seat.OFFER_RESERVED { background: #4b3410; cursor: not-allowed; opacity: 0.6; }
   .seat.BOOKED { background: #3a3a3a; cursor: not-allowed; opacity: 0.7; }
   .seat.BLOCKED { background: #222; cursor: not-allowed; opacity: 0.4; }
   .seat.mine { background: var(--accent); border-color: white; animation: pulse 1.4s infinite; }
-  .seat.selected { border-color: var(--accent-2); }
+  .seat.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
   @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.6); } 50% { box-shadow: 0 0 0 5px rgba(99,102,241,0); } }
-  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 16px; }
-  .legend span { display: inline-flex; align-items: center; gap: 5px; }
-  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 
-  #countdown { font-size: 32px; font-weight: 700; text-align: center; margin: 10px 0; }
+  .legend-wrap { display: flex; flex-wrap: wrap; gap: var(--space-5); margin-bottom: var(--space-5); }
+  .legend { display: flex; gap: var(--space-4); flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 0; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 4px; display: inline-block; }
+  .swatch-available { background: #2f3358; }
+  .swatch-selected { background: #2f3358; border: 2px solid var(--accent); }
+  .swatch-held { background: #4b3410; }
+  .swatch-booked { background: #3a3a3a; }
+
+  #countdown { font-size: 32px; font-weight: 700; text-align: center; margin: var(--space-3) 0; }
   #countdown.amber { color: var(--warn); }
   #countdown.red { color: var(--danger); }
 
   .qr-box { text-align: center; }
-  .qr-box img { background: white; padding: 10px; border-radius: 8px; }
-  .ref { font-size: 22px; font-weight: 700; letter-spacing: 1px; text-align: center; margin: 10px 0; }
+  .qr-box img { background: white; padding: var(--space-3); border-radius: var(--radius); }
+  .ref { font-size: 22px; font-weight: 700; letter-spacing: 1px; text-align: center; margin: var(--space-3) 0; }
 
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th, td { text-align: left; padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 </style>
 
 <header>
-  <h1 id="brand">Ticket Booking</h1>
+  <div class="brand-block" id="brand">
+    <h1>Ticket Booking</h1>
+    <p class="tagline">Book seats from a live map. Holds auto-expire. Sold-out shows have a waitlist.</p>
+  </div>
   <div class="who" id="whoBox"></div>
 </header>
 
@@ -254,7 +349,16 @@
     <p class="muted" id="smMeta"></p>
 
     <div id="screen">screen this way</div>
-    <div class="legend" id="legend"></div>
+    <div class="legend-wrap">
+      <div class="legend">
+        <span><span class="swatch swatch-available"></span>Available</span>
+        <span><span class="swatch swatch-selected"></span>Selected</span>
+        <span><span class="swatch swatch-held"></span>Held</span>
+        <span><span class="swatch swatch-booked"></span>Booked</span>
+      </div>
+      <!-- Category legend (price tiers) -- populated by renderSeatMap(), unchanged from before. -->
+      <div class="legend" id="legend"></div>
+    </div>
     <div id="seatgrid"></div>
 
     <div class="card">
@@ -363,12 +467,31 @@
 
   function setText(id, text) { document.getElementById(id).textContent = text; }
 
+  /**
+   * Replaces a container's content with a single styled "nothing to show" or "still loading"
+   * line (.state-msg, with a small spinner prepended when loading), so an empty list and a
+   * fetch-in-flight both read as a deliberate state rather than blank space.
+   *
+   * @param {HTMLElement} container
+   * @param {string} text
+   * @param {boolean} [loading]
+   * @returns {void}
+   */
+  function setStateMessage(container, text, loading) {
+    container.textContent = '';
+    const div = document.createElement('div');
+    div.className = 'state-msg' + (loading ? ' loading' : '');
+    div.textContent = text;
+    container.appendChild(div);
+  }
+
   // ---- header / session -------------------------------------------------
   function renderWho() {
     const box = document.getElementById('whoBox');
     box.textContent = '';
     if (!state.user) return;
     const span = document.createElement('span');
+    span.className = 'name-chip';
     span.textContent = state.user.name + ' (' + state.user.role + ')';
     const logout = document.createElement('button');
     logout.className = 'secondary';
@@ -416,11 +539,16 @@
   document.getElementById('tabLogin').onclick = () => {
     document.getElementById('loginForm').style.display = '';
     document.getElementById('registerForm').style.display = 'none';
+    document.getElementById('tabLogin').classList.add('on');
+    document.getElementById('tabRegister').classList.remove('on');
   };
   document.getElementById('tabRegister').onclick = () => {
     document.getElementById('loginForm').style.display = 'none';
     document.getElementById('registerForm').style.display = '';
+    document.getElementById('tabRegister').classList.add('on');
+    document.getElementById('tabLogin').classList.remove('on');
   };
+  document.getElementById('tabLogin').classList.add('on');
 
   document.getElementById('loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -477,15 +605,15 @@
   async function loadEvents() {
     setText('eventsError', '');
     const list = document.getElementById('eventList');
-    list.textContent = 'Loading...';
+    setStateMessage(list, 'Loading events…', true);
     try {
       const params = state.eventType ? '?type=' + state.eventType : '';
       const { events } = await api('/events' + params);
-      list.textContent = '';
       if (events.length === 0) {
-        list.textContent = 'Nothing published yet.';
+        setStateMessage(list, 'Nothing published yet.', false);
         return;
       }
+      list.textContent = '';
       for (const ev of events) {
         const card = document.createElement('div');
         card.className = 'card event-card';
@@ -527,6 +655,8 @@
 
   async function openEvent(eventId) {
     setText('showsError', '');
+    const list = document.getElementById('showList');
+    setStateMessage(list, 'Loading showtimes…', true);
     try {
       const [{ event }, { shows }] = await Promise.all([
         api('/events/' + eventId),
@@ -537,9 +667,12 @@
       setText('edMeta', event.type + ' · ' + event.durationMin + ' min');
       setText('edDescription', event.description);
 
-      const list = document.getElementById('showList');
+      if (shows.length === 0) {
+        setStateMessage(list, 'No showtimes scheduled.', false);
+        showView('view-event-detail');
+        return;
+      }
       list.textContent = '';
-      if (shows.length === 0) list.textContent = 'No showtimes scheduled.';
       for (const show of shows) {
         const row = document.createElement('div');
         row.className = 'show-pick';
@@ -569,6 +702,7 @@
     setText('smTitle', show.event.title);
     setText('smMeta', new Date(show.startsAt).toLocaleString() + ' — ' + show.venue.name);
     showView('view-seatmap');
+    setStateMessage(document.getElementById('seatgrid'), 'Loading seats…', true);
     await refreshSeatMap();
     startPolling();
   }
@@ -604,7 +738,10 @@
     const grid = document.getElementById('seatgrid');
     const maxRow = Math.max(1, ...state.seats.map((s) => s.gridRow));
     const maxCol = Math.max(1, ...state.seats.map((s) => s.gridCol));
-    grid.style.gridTemplateColumns = 'repeat(' + maxCol + ', 30px)';
+    // Column 1 is a row-label gutter -- every seat's own grid-column is shifted by one (below)
+    // to make room for it, all inside this ONE grid so a label always lands pixel-aligned with
+    // its row without a second, separately-scrolling layout.
+    grid.style.gridTemplateColumns = '22px repeat(' + maxCol + ', 30px)';
     grid.style.gridTemplateRows = 'repeat(' + maxRow + ', 30px)';
     grid.textContent = '';
 
@@ -612,13 +749,14 @@
     const legendSeen = new Set();
     const legend = document.getElementById('legend');
     legend.textContent = '';
+    const rowLabels = new Map(); // gridRow -> rowLabel, one entry per row actually present
 
     for (const seat of state.seats) {
       const div = document.createElement('div');
       const mine = myHoldSeats.has(seat.seatId);
       div.className = 'seat ' + seat.state + (mine ? ' mine' : '') + (state.selected.has(seat.seatId) ? ' selected' : '');
       div.style.gridRow = seat.gridRow;
-      div.style.gridColumn = seat.gridCol;
+      div.style.gridColumn = seat.gridCol + 1;
       div.title = seat.rowLabel + seat.seatNumber + ' — ' + seat.categoryName +
         (seat.priceCents != null ? ' — $' + (seat.priceCents / 100).toFixed(2) : '');
       div.textContent = seat.seatNumber;
@@ -628,6 +766,7 @@
         div.onclick = () => toggleSeat(seat);
       }
       grid.appendChild(div);
+      rowLabels.set(seat.gridRow, seat.rowLabel);
 
       if (!legendSeen.has(seat.categoryName)) {
         legendSeen.add(seat.categoryName);
@@ -639,6 +778,15 @@
         item.appendChild(document.createTextNode(seat.categoryName));
         legend.appendChild(item);
       }
+    }
+
+    for (const [gridRow, rowLabel] of rowLabels) {
+      const label = document.createElement('div');
+      label.className = 'row-label';
+      label.style.gridRow = gridRow;
+      label.style.gridColumn = 1;
+      label.textContent = rowLabel;
+      grid.appendChild(label);
     }
 
     updateSelectionInfo();
