@@ -97,9 +97,9 @@ DATABASE_URL=postgresql://postgres:<your-password>@localhost:5432/ticket_booking
 ```
 
 This goes in `.env` at the **repo root**, created from `.env.example` (added in P0-5) — not
-`server/.env`. `server/src/config/env.js` loads it from there, since there's currently only one
-thing in this monorepo that needs environment variables; a separate `client/.env` for Vite's own
-`VITE_*`-prefixed vars is a P7-1 concern. Never commit `.env` — it's excluded by `.gitignore`.
+`server/.env`. `server/src/config/env.js` loads it from there. `client/index.html` (D-53) needs no
+env file of its own — it's a static file served by this same server, with no build step and no
+`VITE_*`-style variables to configure.
 
 ### 6. Install dependencies
 
@@ -109,8 +109,9 @@ From the repo root:
 npm install
 ```
 
-This installs and symlinks all three npm workspaces (`server`, `client`, `shared`) in one pass —
-see P0-1 in `docs/BUILD_LOG.md`.
+This installs and symlinks the `server`/`shared` npm workspaces in one pass — see P0-1 in
+`docs/BUILD_LOG.md`. `client/` is a plain static directory (D-53), not a workspace — nothing there
+to install.
 
 ### 7. Verify
 
@@ -124,3 +125,90 @@ psql -U postgres -l
 
 The first command should report `128MB` and `50`. The second should list both `ticket_booking`
 and `ticket_booking_test` among the databases.
+
+---
+
+## Production deployment (Render)
+
+One service to deploy, not two — D-53 already collapsed the client into `client/index.html`,
+served by the same Express process (`express.static`), so there is no separate frontend deploy
+target the way the original React/Vite plan (docs/PROJECT_PROMPT.md §3.1) would have needed. The
+Blueprint at `render.yaml` (repo root) provisions both pieces this needs: the web service and a
+managed Postgres database. This section is the click-through steps around it — the parts that
+have to happen in a browser, not in code.
+
+### 1. Push to GitHub
+
+Render deploys from a Git repository it can see. This repo already has a GitHub remote
+(`origin`) — confirm `phase/4-booking-qr` (the branch `render.yaml` deploys, see its own comment)
+is pushed and current:
+
+```
+git push origin phase/4-booking-qr
+```
+
+### 2. Create a Render account
+
+[render.com](https://render.com) → sign up (GitHub OAuth is the fastest path, and it's also what
+step 3 needs anyway to grant Render read access to the repo). No credit card required for the
+`free` plan tiers this Blueprint uses.
+
+### 3. New Blueprint
+
+Render dashboard → **New +** → **Blueprint** → select this repo. Render reads `render.yaml` from
+the repo root and shows a preview of what it's about to create: one Web Service
+(`ticket-booking-system`) and one PostgreSQL database (`ticket-booking-db`). Confirm — it
+provisions both, wires `DATABASE_URL` from the database to the service automatically
+(`fromDatabase` in `render.yaml`), and generates real random values for `JWT_ACCESS_SECRET`,
+`JWT_REFRESH_SECRET`, and `QR_SIGNING_SECRET` (`generateValue: true`) — nothing to type in by hand.
+
+The **first deploy will fail its health check** for one reason, expected and explained below: the
+Postgres database and the web service provision in parallel, and the web service's own
+`startCommand` runs migrations against it. If the database isn't fully ready the instant the first
+deploy attempts to connect, that attempt fails; Render's automatic retry on the next push (step 5)
+succeeds once the database has settled. Don't chase this as a bug on a first-ever deploy.
+
+### 4. Set `API_URL` and `WEB_URL` (the one manual step)
+
+`render.yaml` deliberately leaves these two `sync: false` — Render only assigns this service's
+public URL (`https://ticket-booking-system-XXXX.onrender.com`, the suffix is random) once the
+service exists, so there's no way to write the real value into `render.yaml` ahead of time. After
+the first deploy:
+
+1. Open the web service in the Render dashboard — its URL is shown at the top.
+2. **Environment** tab → add `API_URL` and `WEB_URL`, both set to that exact URL (no trailing
+   slash).
+3. Save — Render redeploys automatically with the new values.
+
+Until this is done, the app still boots (env.js's own `http://localhost:3000` defaults are valid
+URLs, just wrong ones for this deployment — see Decisions Ledger D-56), but CORS will reject
+browser requests from the real deployed origin, and any waitlist-offer email's claim link will
+point at `localhost`, not the live URL.
+
+### 5. Verify
+
+- `https://<your-service>.onrender.com/health` → `{"success":true,"data":{"status":"ok"},...}`
+- `https://<your-service>.onrender.com/` → the seat-map client loads, `GET /events` shows the two
+  demo events `seed.js#seedDemoCatalogue()` creates automatically on first boot (see `render.yaml`'s
+  `startCommand` comment for why migrate+seed run on every deploy, not just once).
+- Log in as `customer@ticketbooking.test` / `Password123!` (same demo credentials as local dev,
+  `server/src/db/seed.js`) and run the hold → confirm → QR flow for real.
+- **Render's free web-service tier spins the instance down after ~15 minutes idle** and takes
+  30-60s to wake on the next request — the very first request after a quiet period will time out
+  or hang in a browser before the cold start finishes. This is a platform limit, not an app bug;
+  see the Risk register's "Free-tier host sleeps" row in `docs/BUILD_LOG.md`. `DEMO.md` (P10-7,
+  not yet built) should warn a grader about it explicitly.
+
+### What's intentionally NOT configured
+
+- **Real SMTP.** `SMTP_HOST` stays unset in `render.yaml` on purpose — `mail/mailer.js` treats an
+  empty `SMTP_HOST` as "use Ethereal" regardless of `NODE_ENV`, so every email this app sends
+  still genuinely renders and sends; a grader reads the Ethereal preview URL from this service's
+  Render log stream instead of a real inbox. Wire a real provider (Brevo, Resend, ...) only for an
+  actual production deployment, not a graded demo.
+- **A custom domain.** The `onrender.com` subdomain is fine for grading; Render's own docs cover
+  adding one if this ever becomes a real deployment.
+- **Render's paid tiers.** `free` on both the web service and the database keeps this at $0/month,
+  at the cost of the cold-start behavior noted above and Render's free Postgres databases expiring
+  after 90 days of inactivity (a genuine limit worth knowing about, not something this Blueprint
+  can configure around).
