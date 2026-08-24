@@ -6,9 +6,10 @@
  * OFFER_RESERVED seats behind it, or vice versa, is exactly the corrupt state a shared transaction
  * boundary exists to rule out; see offers.service.js#createInitialOffer's own header).
  *
- * Does NOT own: picking WHO gets offered a seat (waitlist.queries.js#claimNextWaitingEntry), the
- * token itself (a placeholder as of P5-3 -- see offers.service.js), or orchestration across
- * multiple categories (bookings.service.js#cancelBooking).
+ * Does NOT own: picking WHO gets offered a seat (waitlist.queries.js#claimNextWaitingEntry),
+ * generating the token itself (offers.service.js#generateOfferToken, P5-4 -- this file only
+ * stores whatever hash it's given), or orchestration across multiple categories
+ * (bookings.service.js#cancelBooking).
  *
  * Invariant: every function here takes a `client` that must already be inside a transaction --
  * see withTransaction.js's header for why calling `pool.query` here instead would silently escape
@@ -79,21 +80,25 @@ export async function transitionBookedSeatsToOfferReserved(
 
 /**
  * @param {import('pg').PoolClient} client
- * @param {{ waitlistEntryId: string, showSeatIds: string[], tokenHash: string, attemptNo: number, offerTtlSeconds: number }} params
+ * @param {{ id: string, waitlistEntryId: string, showSeatIds: string[], tokenHash: string, attemptNo: number, offerTtlSeconds: number }} params
+ *   `id` is supplied by the caller rather than left to the column's own `gen_random_uuid()`
+ *   default -- docs/PROJECT_PROMPT.md §7.3's raw token embeds the offer's id
+ *   (`${offerId}.${randomBytes}`), so the id has to exist and be known BEFORE this INSERT runs,
+ *   not be read back from it afterward. See offers.service.js#generateOfferToken.
  * @returns {Promise<object>} the created offer, camelCased, status PENDING
- * @throws {Error} with `.code === '23505'` on a token_hash collision -- astronomically unlikely
- *   even with P5-3's placeholder token (32 random bytes), not caught specially here; a real
- *   collision would be a bug worth a loud failure, not a silent retry
+ * @throws {Error} with `.code === '23505'` on an `id` or `token_hash` collision -- astronomically
+ *   unlikely (a `crypto.randomUUID()` id, a 32-random-byte token), not caught specially here; a
+ *   real collision would be a bug worth a loud failure, not a silent retry
  */
 export async function insertWaitlistOffer(
   client,
-  { waitlistEntryId, showSeatIds, tokenHash, attemptNo, offerTtlSeconds }
+  { id, waitlistEntryId, showSeatIds, tokenHash, attemptNo, offerTtlSeconds }
 ) {
   const result = await client.query(
-    `INSERT INTO waitlist_offers (waitlist_entry_id, show_seat_ids, token_hash, attempt_no, expires_at)
-     VALUES ($1, $2::uuid[], $3, $4, now() + make_interval(secs => $5))
+    `INSERT INTO waitlist_offers (id, waitlist_entry_id, show_seat_ids, token_hash, attempt_no, expires_at)
+     VALUES ($1, $2, $3::uuid[], $4, $5, now() + make_interval(secs => $6))
      RETURNING *`,
-    [waitlistEntryId, showSeatIds, tokenHash, attemptNo, offerTtlSeconds]
+    [id, waitlistEntryId, showSeatIds, tokenHash, attemptNo, offerTtlSeconds]
   );
   return mapOfferRow(result.rows[0]);
 }
