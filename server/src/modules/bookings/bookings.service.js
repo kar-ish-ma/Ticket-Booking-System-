@@ -6,10 +6,10 @@
  * WALKTHROUGH-style comments.
  *
  * Does NOT own: the SQL itself (bookings.queries.js), payment capture/refund
- * (payments.service.js), or HTTP concerns (bookings.controller.js). Booking history/detail/PDF
- * (P4-9) is a separate, later task — this file grows to hold it, it isn't rewritten for it.
- * cancelBooking()'s waitlist/offer routing (§7.2's `OFFER_RESERVED` branch, P5-3) is also deferred
- * — see that function's own comment for exactly where it slots in.
+ * (payments.service.js), offer creation (offers.service.js#createInitialOffer, called from inside
+ * cancelBooking()'s own transaction — see that call site below), or HTTP concerns
+ * (bookings.controller.js). Booking history/detail/PDF (P4-9) is a separate, later task — this
+ * file grows to hold it, it isn't rewritten for it.
  */
 
 import crypto from 'node:crypto';
@@ -22,7 +22,10 @@ import { SEAT_STATES } from 'shared/seatStates.js';
 import { assertTransition } from '../seatmap/seatState.machine.js';
 import * as bookingsQueries from './bookings.queries.js';
 import * as holdsQueries from '../holds/holds.queries.js';
+import * as showsQueries from '../shows/shows.queries.js';
 import * as paymentsService from '../payments/payments.service.js';
+import * as waitlistQueries from '../waitlist/waitlist.queries.js';
+import * as offersService from '../waitlist/offers.service.js';
 
 // WHY these two generators live here, inline and unexported, instead of in their own files:
 // docs/BUILD_LOG.md's P4-2 row records this explicitly as Phase 4 debt, not a finished feature.
@@ -156,43 +159,64 @@ export async function loadHoldForOwnershipFromConfirmBody(req) {
 }
 
 /**
- * WALKTHROUGH: cancelBooking(), and why three concurrent cancel attempts is a normal case
+ * WALKTHROUGH: cancelBooking(), the §7.2 cancellation -> offer dispatch, and what a rolled-back
+ * offer insert would look like if this weren't all one transaction
  *
  * Same unconditional-calls style as holds.service.js#releaseHold() (P3-4), not an early-return
- * guard: every step below runs every time this is called, and each step's OWN predicate is what
- * makes a repeat call a no-op. A double-click on "Cancel," or a retried request after a dropped
- * response, experiences exactly the same idempotency §5.2 already established for holds -- no new
- * pattern to learn here, the same one reused.
+ * guard for the booking/payment steps: every step below runs every time this is called, and each
+ * step's OWN predicate is what makes a repeat call a no-op. A double-click on "Cancel," or a
+ * retried request after a dropped response, experiences exactly the same idempotency §5.2 already
+ * established for holds -- no new pattern to learn here, the same one reused.
  *
  * 1. bookings.queries.js#markBookingCancelled() -- `WHERE status = 'CONFIRMED'` is the gate. First
  *    call: matches, flips to CANCELLED, stamps cancelled_at. Second call: the row is already
  *    CANCELLED, matches nothing, returns null -- this is what makes the function's own return
  *    value (`cancelled: booking !== null`) accurately report "did THIS call do the cancelling."
+ *    ALSO the concurrency boundary for everything below: under READ COMMITTED (§6.2), a second
+ *    concurrent cancelBooking() call for the SAME bookingId blocks on this UPDATE's row lock, then
+ *    re-evaluates `status = 'CONFIRMED'` against the now-CANCELLED row once unblocked -- it no
+ *    longer matches, so at most ONE call ever proceeds past this line to do real work.
  * 2. payments.service.js#refund() (P4-1) -- called unconditionally, not gated on step 1's result.
  *    Its own `WHERE status = 'CAPTURED'` predicate is independently idempotent, already falsified
- *    live at P4-1. A second cancelBooking() call refunds nothing new; no new code on either side
- *    had to be written to make that composition safe.
- * 3. assertTransition(BOOKED, AVAILABLE) -- extends the D-40/D-44 reasoning to a third call site
- *    (Decisions Ledger D-45): this is also a transition decided in application code before a
- *    single-row UPDATE, not a multi-branch predicate the way holds.queries.js#acquireSeats needs
- *    one. Trivially true today for the same reason D-44 gave for confirmBooking().
- * 4. bookings.queries.js#releaseBookedSeats() -- the §7.2 counterpart to confirmHeldSeats(). A
- *    second call's `WHERE state = 'BOOKED'` matches nothing (already AVAILABLE) -- empty array,
- *    not an error.
- * 5. **Group the released seats by categoryId.** §7.2's own cancellation diagram frames the
- *    decision this way -- "for each category group: queue empty -> AVAILABLE; queue head ->
- *    OFFER_RESERVED" -- because different categories of the SAME cancelled booking can have
- *    different waitlist depths. Every group resolves to AVAILABLE here, unconditionally: this is
- *    where Phase 5's P5-3 inserts its branch, checking each group's waitlist head-of-queue
- *    (`FOR UPDATE SKIP LOCKED`, §7.4) and routing non-empty groups to OFFER_RESERVED instead. WHY
- *    that second branch has to exist at all, not just "release everything, always" — Decisions
- *    Ledger D-7: a seat freed by a cancellation must never re-enter the public pool while a
- *    waitlist offer on it is live, or a random browser snipes the seat the queue was promised.
- *    Grouping by category here, even with only one branch implemented, is what lets P5-3 slot in
- *    without restructuring this function.
+ *    live at P4-1.
+ * 3. bookings.queries.js#findBookedSeatsByBooking() -- a plain read (not FOR UPDATE; see that
+ *    function's own header for why) of this booking's currently-BOOKED seats, grouped by
+ *    categoryId in JS. Step 1's predicate already guarantees only one call gets here with a
+ *    nonempty result for a given booking.
+ * 4. For EACH category group (§7.2's own diagram frames the decision exactly this way -- different
+ *    categories of the SAME cancelled booking can have different waitlist depths):
+ *    a. waitlist.queries.js#claimNextWaitingEntry() -- `FOR UPDATE SKIP LOCKED` on the queue head
+ *       for this (show, category). Queue empty -> null.
+ *    b. Queue empty: assertTransition(BOOKED, AVAILABLE) (Decisions Ledger D-45, extending
+ *       D-40/D-44), then bookings.queries.js#releaseBookedSeatsForCategory() -- scoped per
+ *       category so a multi-category booking can resolve one group this way while another group
+ *       resolves via (c) in the SAME transaction.
+ *    c. Queue non-empty: offers.service.js#createInitialOffer() -- transitions this category's
+ *       seats to OFFER_RESERVED (with `reserved_until` set once per D-14), inserts the
+ *       waitlist_offers row, and flips the claimed entry WAITING -> OFFERED. Its own header
+ *       explains why `expires_at`/`reserved_until` are computed via two independent
+ *       `now() + make_interval(...)` expressions rather than one JS timestamp threaded through
+ *       both calls.
+ * 5. **Why this whole dispatch is ONE withTransaction() call, not the booking-cancel steps in one
+ *    transaction and the offer creation in another**: if step 4c's offer insert (or the seat
+ *    transition, or the entry flip) threw AFTER a separately-committed booking cancellation, the
+ *    result would be a CANCELLED booking whose seats are still raw-stored BOOKED (never
+ *    transitioned to either AVAILABLE or OFFER_RESERVED) -- or worse, seats already flipped to
+ *    OFFER_RESERVED with NO waitlist_offers row and NO entry marked OFFERED, i.e. seats reserved
+ *    for nobody: invisible to the seat map (which reports whatever `show_seats.state` actually
+ *    is), never swept by any TTL layer this codebase has built (all three key off
+ *    show_seats.expires_at/reserved_until existing ALONGSIDE a real offer, not off a bare seat
+ *    state with nothing backing it), and not recoverable by any mechanism here. One
+ *    withTransaction() call means step 4's entire per-category loop -- claim, transition, offer
+ *    insert, entry flip, for every category -- either all commits together with the booking
+ *    cancel and refund, or none of it does. tests/e2e/bookingCancel.test.js proves this directly
+ *    by forcing the offer insert to fail and checking that the booking is still CONFIRMED and the
+ *    seat is still BOOKED, not by argument alone.
  *
  * @param {{ bookingId: string }} params
- * @returns {Promise<{ cancelled: boolean, releasedSeatsByCategory: Map<string, Array<{ seatId: string, categoryId: string, showId: string }>> }>}
+ * @returns {Promise<{ cancelled: boolean, releasedSeatsByCategory: Map<string, Array<{ seatId: string, showSeatId: string, state: string }>> }>}
+ *   `state` on each seat is `'AVAILABLE'` or `'OFFER_RESERVED'` depending on which branch that
+ *   category resolved to
  * @throws never; cancelling an already-cancelled or nonexistent-under-CONFIRMED booking is a
  *   normal, idempotent outcome (`cancelled: false`), not an error
  */
@@ -202,21 +226,43 @@ export async function cancelBooking({ bookingId }) {
 
     await paymentsService.refund(client, bookingId);
 
-    // See this function's own WALKTHROUGH step 3 / Decisions Ledger D-45.
-    assertTransition(SEAT_STATES.BOOKED, SEAT_STATES.AVAILABLE);
-
-    const releasedSeats = await bookingsQueries.releaseBookedSeats(client, bookingId);
+    const bookedSeats = await bookingsQueries.findBookedSeatsByBooking(client, bookingId);
+    const categoryIds = [...new Set(bookedSeats.map((seat) => seat.categoryId))];
+    // Every row shares the same show_id -- a booking's seats all belong to one show (004_bookings.sql).
+    const showId = bookedSeats[0]?.showId;
+    const show = showId ? await showsQueries.findShowById(client, showId) : null;
 
     const releasedSeatsByCategory = new Map();
-    for (const seat of releasedSeats) {
-      const group = releasedSeatsByCategory.get(seat.categoryId) ?? [];
-      group.push(seat);
-      releasedSeatsByCategory.set(seat.categoryId, group);
+    for (const categoryId of categoryIds) {
+      const waitingEntry = await waitlistQueries.claimNextWaitingEntry(client, { showId, categoryId });
+
+      if (waitingEntry) {
+        // See this function's own WALKTHROUGH step 4c and offers.service.js#createInitialOffer's
+        // header for where assertTransition(BOOKED, OFFER_RESERVED) is called.
+        const { seats } = await offersService.createInitialOffer(client, {
+          bookingId,
+          categoryId,
+          waitlistEntryId: waitingEntry.id,
+          offerTtlSeconds: show.offerTtlSeconds,
+          maxCascadeAttempts: env.WAITLIST_MAX_CASCADE_ATTEMPTS,
+        });
+        releasedSeatsByCategory.set(
+          categoryId,
+          seats.map((seat) => ({ ...seat, state: SEAT_STATES.OFFER_RESERVED }))
+        );
+      } else {
+        // See this function's own WALKTHROUGH step 4b / Decisions Ledger D-45.
+        assertTransition(SEAT_STATES.BOOKED, SEAT_STATES.AVAILABLE);
+        const seats = await bookingsQueries.releaseBookedSeatsForCategory(client, {
+          bookingId,
+          categoryId,
+        });
+        releasedSeatsByCategory.set(
+          categoryId,
+          seats.map((seat) => ({ ...seat, state: SEAT_STATES.AVAILABLE }))
+        );
+      }
     }
-    // WHY every group above resolves to AVAILABLE, unconditionally, rather than checking the
-    // waitlist here: that's §7.2's OFFER_RESERVED branch, deliberately deferred to Phase 5's
-    // P5-3 -- see this function's own WALKTHROUGH step 5 and Decisions Ledger D-7 for why the
-    // grouping already exists even though only one outcome is implemented today.
 
     return { cancelled: booking !== null, releasedSeatsByCategory };
   });

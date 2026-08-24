@@ -8,7 +8,9 @@
  * Does NOT own: request validation (shared/schemas/waitlist.schema.js), the effective-availability
  * check that gates joining (reuses seatmap.queries.js#EFFECTIVE_STATE_CASE, the single source of
  * truth for "is this seat really available right now" -- see that file's header), or offer
- * lifecycle SQL (waitlist_offers -- offers.queries.js, later in Phase 5).
+ * lifecycle SQL (waitlist_offers -- offers.queries.js). This file's `claimNextWaitingEntry()`
+ * (P5-3) is the boundary between the two: it picks WHO gets offered a seat, offers.queries.js
+ * decides what happens to the SEATS and the offer record once someone has been picked.
  *
  * Invariant: every function here takes a `client`. Never call `pool.query` inside a
  * transaction — see withTransaction.js's header for why that silently breaks correctness.
@@ -110,6 +112,53 @@ export async function findEntryForUser(client, { showId, categoryId, userId }) {
   const result = await client.query(
     `SELECT * FROM waitlist_entries WHERE show_id = $1 AND category_id = $2 AND user_id = $3`,
     [showId, categoryId, userId]
+  );
+  return mapEntryRow(result.rows[0]);
+}
+
+/**
+ * The literal docs/PROJECT_PROMPT.md §7.4 query, reused for BOTH the cancellation flow's initial
+ * offer (P5-3, this call site) and the cascade's re-offer (P5-6, not built yet) -- one query, one
+ * place that decides "who's next," rather than two independently-maintained copies.
+ *
+ * WHY `FOR UPDATE SKIP LOCKED`, not a plain SELECT, even for the FIRST offer (§7.2's own diagram
+ * doesn't show it explicitly, only §7.4's cascade does): two bookings in the SAME category can be
+ * cancelled concurrently, each trying to offer the freed seats to the queue's head. Without a row
+ * lock, both transactions could read the SAME single waiting entry and both try to offer it --
+ * SKIP LOCKED means the second transaction's SELECT simply finds nothing (the row is locked, so
+ * it's excluded rather than waited on), correctly falling through to its own AVAILABLE branch
+ * instead of double-offering one entry two different seat sets.
+ *
+ * @param {import('pg').PoolClient} client - must already be inside a transaction (FOR UPDATE
+ *   requires one; the lock is released at COMMIT/ROLLBACK, not by this function)
+ * @param {{ showId: string, categoryId: string }} params
+ * @returns {Promise<object | null>} the claimed entry (still status WAITING -- the caller flips it
+ *   to OFFERED once the offer itself is created), or null if the queue is empty
+ */
+export async function claimNextWaitingEntry(client, { showId, categoryId }) {
+  const result = await client.query(
+    `SELECT * FROM waitlist_entries
+      WHERE show_id = $1 AND category_id = $2 AND status = 'WAITING'
+      ORDER BY enqueued_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED`,
+    [showId, categoryId]
+  );
+  return mapEntryRow(result.rows[0]);
+}
+
+/**
+ * @param {import('pg').PoolClient} client
+ * @param {string} entryId
+ * @returns {Promise<object | null>} the updated entry, or null if it wasn't WAITING -- shouldn't
+ *   happen in practice (the caller just claimed this row with FOR UPDATE in the same transaction,
+ *   so nothing else could have changed its status), but the predicate is the safety net rather
+ *   than trusting the caller's sequencing
+ */
+export async function markEntryOffered(client, entryId) {
+  const result = await client.query(
+    `UPDATE waitlist_entries SET status = 'OFFERED' WHERE id = $1 AND status = 'WAITING' RETURNING *`,
+    [entryId]
   );
   return mapEntryRow(result.rows[0]);
 }

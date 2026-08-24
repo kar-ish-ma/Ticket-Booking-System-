@@ -7,11 +7,14 @@
  * booking's seats (with pricing/category) and writing the `bookings`/`booking_seats` rows around
  * those atomic steps.
  *
- * Does NOT own: deciding whether a short `confirmHeldSeats()` result means rollback, or what a
- * cancellation's freed seats should become PER CATEGORY (`AVAILABLE` vs `OFFER_RESERVED`,
- * §7.2/D-7) — both are bookings.service.js's job, same split as holds.queries.js#acquireSeats /
- * holds.service.js#createHold. Also does not own payment capture/refund (payments.service.js) or
- * seat-hold bookkeeping (holds.queries.js#markSeatHoldReleased, reused as-is for `'CONVERTED'`).
+ * Does NOT own: deciding whether a short `confirmHeldSeats()` result means rollback, or which
+ * category groups go to `OFFER_RESERVED` instead of `AVAILABLE` (§7.2/D-7 — that decision is
+ * bookings.service.js#cancelBooking's, made by calling waitlist.queries.js#claimNextWaitingEntry
+ * per category; this file's own `releaseBookedSeatsForCategory()` only ever writes `AVAILABLE`).
+ * The `OFFER_RESERVED` write itself lives in offers.queries.js, not here — same split as
+ * holds.queries.js#acquireSeats / holds.service.js#createHold. Also does not own payment
+ * capture/refund (payments.service.js) or seat-hold bookkeeping
+ * (holds.queries.js#markSeatHoldReleased, reused as-is for `'CONVERTED'`).
  *
  * Invariant: every function here takes a `client` that must already be inside a transaction (see
  * withTransaction.js's header for why calling `pool.query` here instead would silently escape it).
@@ -193,30 +196,59 @@ export async function markBookingCancelled(client, bookingId) {
 }
 
 /**
- * The §7.2 counterpart to confirmHeldSeats(): one statement, no read-then-write, releasing every
- * seat this booking still owns back to AVAILABLE. `category_id` is in the RETURNING list
- * specifically so bookings.service.js#cancelBooking can group the result by category without a
- * second query — §7.2's cancellation flow decides AVAILABLE-vs-OFFER_RESERVED PER CATEGORY GROUP,
- * not per booking, so the grouping key has to survive this call even though only one branch
- * (AVAILABLE, unconditionally) is implemented as of P4-8.
+ * A plain read (not `FOR UPDATE`) of every `show_seats` row still `BOOKED` under this booking,
+ * grouped implicitly by returning `category_id`/`show_id` on each row so
+ * bookings.service.js#cancelBooking can group them in JS before deciding, PER CATEGORY, whether
+ * that group goes to `AVAILABLE` or `OFFER_RESERVED` (§7.2/D-7). Not locked here for the same
+ * reason `findHoldSeats()` isn't: the correctness-critical step is each category's own guarded
+ * `UPDATE` below (or offers.queries.js#transitionBookedSeatsToOfferReserved) — this read only
+ * decides WHICH categories exist to loop over, and `markBookingCancelled()`'s own
+ * `WHERE status = 'CONFIRMED'` predicate (called immediately before this, in the same transaction)
+ * already guarantees at most one concurrent cancelBooking() call gets this far for a given
+ * bookingId.
  *
  * @param {import('pg').PoolClient} client
  * @param {string} bookingId
- * @returns {Promise<Array<{ seatId: string, categoryId: string, showId: string }>>} seats
- *   actually released — empty is a normal, idempotent outcome (already cancelled, or this
- *   booking never reached BOOKED seats), never an error
+ * @returns {Promise<Array<{ showSeatId: string, seatId: string, categoryId: string, showId: string }>>}
+ *   empty if this booking has no seats currently `BOOKED` — already cancelled, or never reached
+ *   `BOOKED` in the first place
  */
-export async function releaseBookedSeats(client, bookingId) {
+export async function findBookedSeatsByBooking(client, bookingId) {
   const result = await client.query(
-    `UPDATE show_seats
-        SET state = 'AVAILABLE', booking_id = NULL, version = version + 1, updated_at = now()
-      WHERE booking_id = $1 AND state = 'BOOKED'
-     RETURNING seat_id, category_id, show_id`,
+    `SELECT id AS show_seat_id, seat_id, category_id, show_id
+       FROM show_seats
+      WHERE booking_id = $1 AND state = 'BOOKED'`,
     [bookingId]
   );
   return result.rows.map((row) => ({
+    showSeatId: row.show_seat_id,
     seatId: row.seat_id,
     categoryId: row.category_id,
     showId: row.show_id,
   }));
+}
+
+/**
+ * The `AVAILABLE` branch of §7.2's cancellation flow, scoped to one category of one booking —
+ * the counterpart to offers.queries.js#transitionBookedSeatsToOfferReserved, which handles the
+ * other branch. Scoping by `category_id`, not just `booking_id`, is what lets
+ * bookings.service.js#cancelBooking route a multi-category booking's groups independently: one
+ * category's seats can land here while another's land in offers.queries.js, in the SAME
+ * transaction, without either statement touching rows the other one owns.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {{ bookingId: string, categoryId: string }} params
+ * @returns {Promise<Array<{ seatId: string, showSeatId: string }>>} seats actually released —
+ *   empty is a normal, idempotent outcome (already released, or this category was never BOOKED
+ *   under this booking), never an error
+ */
+export async function releaseBookedSeatsForCategory(client, { bookingId, categoryId }) {
+  const result = await client.query(
+    `UPDATE show_seats
+        SET state = 'AVAILABLE', booking_id = NULL, version = version + 1, updated_at = now()
+      WHERE booking_id = $1 AND category_id = $2 AND state = 'BOOKED'
+     RETURNING seat_id, id AS show_seat_id`,
+    [bookingId, categoryId]
+  );
+  return result.rows.map((row) => ({ seatId: row.seat_id, showSeatId: row.show_seat_id }));
 }

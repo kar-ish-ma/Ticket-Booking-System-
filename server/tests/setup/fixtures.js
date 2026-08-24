@@ -80,10 +80,10 @@ export async function createAdminAndLogin(app) {
  * ask for "A1"/"A2" instead of juggling raw uuids it would otherwise have to fetch separately.
  *
  * @param {import('express').Express} app
- * @param {{ seatCount?: number }} [options]
+ * @param {{ seatCount?: number, offerTtlSeconds?: number }} [options]
  * @returns {Promise<{ showId: string, categoryId: string, venueId: string, seatIdByLabel: Record<string, string> }>}
  */
-export async function buildBookableShow(app, { seatCount = 6 } = {}) {
+export async function buildBookableShow(app, { seatCount = 6, offerTtlSeconds } = {}) {
   const { cookie: adminCookie } = await createAdminAndLogin(app);
   const { cookie: organiserCookie } = await registerAndLogin(app, { role: 'ORGANISER' });
 
@@ -118,6 +118,11 @@ export async function buildBookableShow(app, { seatCount = 6 } = {}) {
       startsAt: new Date(Date.now() + 3_600_000).toISOString(),
       endsAt: new Date(Date.now() + 7_200_000).toISOString(),
       prices: [{ categoryId, priceCents: 1000 }],
+      // Undefined when the caller doesn't pass it -- omitted from the JSON body entirely, so the
+      // show falls back to its own column default (900s), same as every other caller of this
+      // fixture already relies on. Only set explicitly by tests asserting D-14's reserved_until
+      // formula against a known, small offer_ttl_seconds.
+      ...(offerTtlSeconds !== undefined ? { offerTtlSeconds } : {}),
     });
   const showId = showRes.body.data.show.id;
 
