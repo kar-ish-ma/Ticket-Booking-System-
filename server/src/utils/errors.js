@@ -126,3 +126,13 @@ export class SeatsUnavailableError extends DomainError {
     });
   }
 }
+
+// WHY 410 (Gone), not 404 or 409: the hold this request named DID exist and WAS valid -- it just
+// isn't anymore, and never will be again under this id (unlike SEATS_UNAVAILABLE's 409, which
+// describes a request that could succeed against a DIFFERENT seat). 410 is the one status whose
+// HTTP semantics mean exactly that: the resource existed, is now permanently gone, don't retry.
+export class HoldExpiredError extends DomainError {
+  constructor(message = 'This hold is no longer active') {
+    super(message, { status: 410, code: ERROR_CODES.HOLD_EXPIRED });
+  }
+}

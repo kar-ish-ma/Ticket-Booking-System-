@@ -86,4 +86,10 @@ export const ERROR_CODES = Object.freeze({
   // seat is held (holds.service.js#createHold). error.details carries the conflicting seats'
   // labels so the UI can flash exactly those red, per docs/PROJECT_PROMPT.md §6.1.
   SEATS_UNAVAILABLE: 'SEATS_UNAVAILABLE',
+
+  // Thrown by POST /bookings/confirm when the hold this request names no longer has any seats
+  // actively HELD under it -- expired, already released, or already converted into a booking by
+  // an earlier request (a double-submit racing itself). The UI should treat this like the hold's
+  // countdown reached zero: send the customer back to seat selection, never silently retry.
+  HOLD_EXPIRED: 'HOLD_EXPIRED',
 });

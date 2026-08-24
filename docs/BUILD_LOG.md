@@ -33,14 +33,14 @@
 | 1 | Database and auth | 7 | 7/7 |
 | 2 | Venues, events, shows, seat map | 7 | 7/7 |
 | 3 | **Seat holds, TTL, concurrency** ⭐ | 9 | 5/9 |
-| 4 | Booking, QR, email outbox | 9 | 1/9 |
+| 4 | Booking, QR, email outbox | 9 | 2/9 |
 | 5 | **Waitlist and time-limited offers** ⭐ | 8 | 0/8 |
 | 6 | Realtime seat map | 5 | 0/5 |
 | 7 | React frontend | 10 | 0/10 |
 | 8 | Reports, admin, check-in | 5 | 0/5 |
 | 9 | Hardening and proof | 6 | 0/6 |
 | 10 | Docs, deploy, demo | 7 | 0/7 |
-| | **Total** | **80** | **27/80** |
+| | **Total** | **80** | **28/80** |
 
 ---
 
@@ -144,28 +144,27 @@ booking-history/PDF half of the old P4-8, split out below as **P4-9**) follows a
 
 **Real dependency found while planning this reorder, not just a preference:** `bookings.reference`
 and `bookings.qr_token` are both `NOT NULL` (004_bookings.sql) — `confirmBooking()` cannot insert a
-valid row without a reference and a QR token, which means **P4-4** (reference generator) and
-**P4-5** (QR service) are hard prerequisites of P4-2, not later, independent tasks. Likewise,
-`cancelBooking()`'s own spec (P4-8) names "refund" explicitly — a real dependency on whatever P4-1
-(mock payments) provides for `refund()`. All three (P4-1, P4-4, P4-5) are small, self-contained
-utilities with no dependency on Phase 5 or on each other's more elaborate future scope (P4-1's
-`authorize()`/`capture()` beyond what confirm needs, P4-6/P4-7's outbox/email), so they're pulled
-forward as prerequisites of P4-2/P4-8 rather than silently skipped or deferred against their own
-structural need. Final build order for this stretch: **P4-4 → P4-5 → P4-1 → P4-2 → P4-8 → all of
-Phase 5 → P4-3 → P4-6 → P4-7 → P4-9**. Each still gets its own plan and its own commit — this is an
-order change, not a batching license (CLAUDE.md's plan-mode rule for Phase 3/4/5 still applies to
-every single row below).
+valid row without a reference and a QR token. Originally planned to pull P4-4/P4-5 forward in full
+to satisfy this; **corrected by user directive** before P4-2 was built: P4-4/P4-5 stay skipped for
+now, and `confirmBooking()` inlines minimal placeholder generators instead (see "Phase 4 debt"
+below) — the real Crockford base32 generator and signed-JWT QR service land whenever P4-4/P4-5 are
+actually revisited. `cancelBooking()`'s own spec (P4-8) still names "refund" explicitly, which is
+why P4-1 (mock payments) stayed a real prerequisite and was built first. **Actual build order for
+this stretch: P4-1 → P4-2 → P4-8 (cancellation half only) → all of Phase 5 → P4-3 → P4-4 → P4-5 →
+P4-6 → P4-7 → P4-9.** Each still gets its own plan and its own commit — this is an order change,
+not a batching license (CLAUDE.md's plan-mode rule for Phase 3/4/5 still applies to every single
+row below).
 
 | ID | Change | Status | Files touched | Verified by | Commit |
 |---|---|---|---|---|---|
 | P4-1 | Mock payment service: authorize → capture → refund | ✅ | `server/src/modules/payments/{payments.queries,payments.service}.js`, `server/tests/e2e/payments.test.js`, `docs/FILE_MANIFEST.md` | `npm run test:e2e` → 4 files, 10/10 (2 new, in `tests/e2e/payments.test.js`, not `tests/unit/` — see D-43). `authorizeAndCapture()` ends at exactly one `CAPTURED` row per booking, never left `AUTHORIZED`; `refund()` then a second `refund()` on the same booking returns `null`, no error. **Falsified live**: dropped `markPaymentRefunded`'s `AND status = 'CAPTURED'` guard — the double-refund test correctly failed (a row came back instead of `null`); restored, confirmed the file untracked-but-identical to what was written (new file, so no `git status` diff to check — re-read instead to confirm the restore matched the original). `npm run lint` clean; full suite (`npm test`) unaffected: 31 unit + 10 e2e. | |
-| P4-2 | ⭐ `confirmBooking()`: hold→booking with the `expires_at > now()` guard; short `rowCount` ⇒ `410 HOLD_EXPIRED` | ⬜ **next** | `bookings.service.js`, `bookings.queries.js` | Confirm at TTL+1ms fails cleanly | |
+| P4-2 | ⭐ `confirmBooking()`: hold→booking with the `expires_at > now()` guard; short `rowCount` ⇒ `410 HOLD_EXPIRED` | ✅ | `server/src/modules/bookings/{bookings.routes,bookings.controller,bookings.service,bookings.queries}.js`, `shared/schemas/booking.schema.js`, `shared/errors.js` (+`HOLD_EXPIRED`), `server/src/utils/errors.js` (+`HoldExpiredError`), `server/src/modules/holds/holds.queries.js` (`markSeatHoldReleased`'s status union widened to include `'CONVERTED'`), `server/src/app.js` (mounts `/api/v1/bookings`), `server/tests/e2e/bookingFlow.test.js`, `docs/FILE_MANIFEST.md` | `npm run test:e2e` → 5 files, 13/13 (3 new: happy path, confirm-at-TTL+1ms, 20-parallel-confirms). Happy path confirms seat `BOOKED`, `seat_holds` row `CONVERTED`, payment `CAPTURED`, one `booking_seats` row with the right `price_cents`. **§6.6 scenarios unblocked by this task, both proven**: confirm at `expires_at+1ms` → `410 HOLD_EXPIRED`, zero bookings/payments persist, seat stays raw-stored `HELD` (never touched, not reclaimed); 20 parallel confirms of one hold → exactly 1 `201`/booking/`CAPTURED` payment/`CONVERTED` hold, 19 × `410`. **Falsified live**: dropped `confirmHeldSeats()`'s `AND expires_at > now()` — the TTL test correctly failed (`201` instead of `410`); restored, re-verified. `assertTransition(HELD, BOOKED)` wired in immediately before the atomic UPDATE, closing the loop D-40 opened (see the new Decisions Ledger entry). Two inline placeholder generators stand in for P4-4/P4-5 — see "Phase 4 debt" below. `npm run lint` clean; full suite 31 unit + 13 e2e. | |
 | P4-3 | Idempotency via the `bookings.idempotency_key` unique constraint — on conflict, return the original | ⬜ **deferred to after Phase 5** — see ordering note above | `middleware/idempotency.js`, `bookings.queries.js` | 20 parallel replays → 1 booking | |
-| P4-4 | Booking reference generator (Crockford base32, no ambiguous characters) | ⬜ **built before P4-2** — see ordering note above | `utils/reference.js` | 100k generated, zero collisions | |
-| P4-5 | ⭐ QR service: signed JWT (separate secret) → PNG buffer | ⬜ **built before P4-2** — see ordering note above | `bookings/qr.service.js` | Decoded QR verifies against the secret | |
+| P4-4 | Booking reference generator (Crockford base32, no ambiguous characters) | ⬜ **deferred to after Phase 5** — see ordering note above. `confirmBooking()` (P4-2) inlines a placeholder generator in the meantime; see "Phase 4 debt" below | `utils/reference.js` | 100k generated, zero collisions | |
+| P4-5 | ⭐ QR service: signed JWT (separate secret) → PNG buffer | ⬜ **deferred to after Phase 5** — see ordering note above. `confirmBooking()` (P4-2) inlines a placeholder token in the meantime; see "Phase 4 debt" below | `bookings/qr.service.js` | Decoded QR verifies against the secret | |
 | P4-6 | ⭐ Transactional outbox: row + `OUTBOX_SEND` job both written in the booking transaction; 60s reconciler for orphaned rows | ⬜ **deferred to after Phase 5** — see ordering note above | `queue/handlers/outboxSend.js`, `jobs/outboxReconciler.job.js` | Rolled-back booking sends no email | |
 | P4-7 | Nodemailer + EJS templates; QR inline via CID; **Ethereal** auto-account in dev, preview URL logged | ⬜ **deferred to after Phase 5** — see ordering note above | `mail/*` | Ethereal preview shows a rendering QR | |
-| P4-8 | ⭐ `cancelBooking()`: refund + seat release, routing freed seats through `bookings.service.js`/`offers.service.js` per §7.2 — **redefined to cancellation only**; booking history/detail/PDF split out to P4-9 below | ⬜ **built right after P4-2** — see ordering note above | `bookings.service.js`, `bookings.queries.js` | Cancelling a booking with an empty waitlist frees seats to `AVAILABLE`; with a non-empty waitlist, seats go to `OFFER_RESERVED` (proven fully once Phase 5 exists to receive the hand-off) | |
+| P4-8 | ⭐ `cancelBooking()`: refund + seat release, routing freed seats through `bookings.service.js`/`offers.service.js` per §7.2 — **redefined to cancellation only**; booking history/detail/PDF split out to P4-9 below | ⬜ **next** | `bookings.service.js`, `bookings.queries.js` | Cancelling a booking with an empty waitlist frees seats to `AVAILABLE`; with a non-empty waitlist, seats go to `OFFER_RESERVED` (proven fully once Phase 5 exists to receive the hand-off) | |
 | P4-9 | Booking history, detail, PDF ticket | ⬜ **deferred to after Phase 5** — see ordering note above. Split from the original P4-8, which bundled this with cancellation | `bookings.*`, `ticketPdf.service.js` | E2E full lifecycle | |
 
 **Exit criteria:** Book → email with a scannable QR lands. A rolled-back booking sends nothing.
@@ -324,6 +323,7 @@ Record every non-obvious choice here as it is made. This is the artefact that sh
 | D-41 | 2026-08-24 | `MAX_SEATS_PER_BOOKING` is enforced in `holds.service.js#createHold()` (a plain `if` before any DB round-trip), not baked into `shared/schemas/hold.schema.js` | Hardcode a seat-count cap into the shared Zod schema so the client can reject an over-large selection before ever calling the API | `MAX_SEATS_PER_BOOKING` is server-only env (`docs/PROJECT_PROMPT.md` §12), read via the validated `env` object — `shared/schemas/hold.schema.js` is imported into the CLIENT bundle too (P7-5) and has no access to server config. Baking a number into the shared schema means either hardcoding a value that can drift from the real env-configured cap (exactly the "magic number in code" CLAUDE.md's Conventions rule out) or plumbing server env into shared/client code, breaking that boundary for one validation rule. Enforcing it as a `ValidationError` in the service layer, which already reads `env`, keeps the cap in exactly one place, correct by construction — at the cost of the client only learning about an oversized selection after a round trip instead of before one, an acceptable trade for a rule that's cheap to violate rarely (P3-3). |
 | D-42 | 2026-08-24 | `DELETE /api/v1/holds/:id` (P3-4) is wired with `requireOwnership(loadHoldForOwnership)` — only the hold's own user may release it — even though P3-4's own task text didn't spell out an ownership check | Ship `DELETE /holds/:id` behind `requireAuth` alone (any authenticated user could release ANY hold by id), deferring an ownership check to a later task | `releaseHold()` is deliberately idempotent and side-effect-free to call twice, but that guarantee says nothing about WHO should be allowed to call it once. Without an ownership check, any logged-in customer could guess or enumerate another customer's holdId and free a seat out from under them mid-checkout — a real, exploitable gap in a scored concurrency phase, not a hypothetical. `holds.service.js#loadHoldForOwnership()` reuses the exact same `requireOwnership` factory Phase 2's event/show routes already established (the `{ ownerId }` loader shape), so this cost nothing structurally beyond a one-line loader and route wiring — P3-3's own `docs/FILE_MANIFEST.md` note had already pre-committed to it before P3-4 started. |
 | D-43 | 2026-08-24 | P4-1's `payments.service.js` test (`tests/e2e/payments.test.js`) lives in the e2e Vitest config, not `tests/unit/`, even though BUILD_LOG's own P4-1 row originally said "Unit test." It also constructs its own minimal `bookings` row directly via `pool.query` rather than waiting for P4-2's real `confirmBooking()` to exist | Write it as a true unit test (mock the `client`/`pool`) so it could run before any booking-creation code exists | `payments.queries.js`'s functions take a real `client` and write real rows through a real `INSERT`/`UPDATE` — the whole point, per CLAUDE.md, is that mocking `pool`/`client` proves nothing about the actual SQL (the same reasoning `docs/PROJECT_PROMPT.md` §6.6 gives for never mocking the pool in a concurrency test). `vitest.unit.config.js` deliberately has no DB access at all (P3-9) — anything that touches Postgres belongs in the e2e config regardless of how small the module is. Building a real (if minimal) `bookings` row via direct SQL, rather than mocking the FK away, means the test also genuinely exercises `payments.booking_id`'s real foreign key constraint, not an assumption about it. |
+| D-44 | 2026-08-24 | `bookings.service.js#confirmBooking()` calls `assertTransition(SEAT_STATES.HELD, SEAT_STATES.BOOKED)` — with `fromState` a hardcoded literal, not derived from a DB read — immediately before `confirmHeldSeats()`'s atomic `UPDATE`, closing the call site D-40 promised | Leave `assertTransition()` uncalled again, since a hardcoded `fromState` can never actually fail and the real correctness guard is `confirmHeldSeats()`'s own `WHERE` clause | The call is trivially true TODAY, and that's fine — D-40 already explained why: it guards a caller's CHOICE of `(fromState, toState)`, a check that only earns its keep once this exact "guarded transaction shape" is reused with a DIFFERENT `fromState`, which §7.3 says will happen at Phase 5's offer-accept (`OFFER_RESERVED → BOOKED`). Skipping the call now and adding it "when it matters" would mean either retrofitting `confirmBooking()` later (touching code that's already shipped and tested) or building the Phase 5 reuse without ever wiring the guard in at all. Wiring it in now, even trivially, means the shared shape both `confirmBooking()` and the future offer-accept function reuse already has the guard in place on day one of that reuse. |
 
 ---
 
@@ -426,7 +426,34 @@ read as an oversight later.
   purpose (user directive, 2026-08-24): out of scope for the concurrency mechanism P3-3 is about.
   Revisit when a task naturally needs show-lifecycle validation — likely Phase 4 (booking) or
   wherever `SHOW_NOT_SELLABLE` (already a named code in `docs/PROJECT_PROMPT.md` §9) gets its
-  first thrower.
+  first thrower. **Still open as of P4-2** — `confirmBooking()` doesn't check it either, for the
+  same reason.
+
+## Phase 4 debt
+
+Like Phase 3, this is scored territory (`confirmBooking()`/`cancelBooking()` are both starred
+mechanisms) — corners cut here are genuine, tracked scope decisions, not polish skipped for speed.
+
+- **`bookings.reference` and `bookings.qr_token` are placeholder-generated**, not the real P4-4
+  (Crockford base32, no ambiguous characters, 100k-collision-tested) or P4-5 (signed JWT → PNG
+  buffer) implementations. `bookings.service.js#generatePlaceholderReference()` /
+  `generatePlaceholderQrToken()` are neither cryptographically meaningful nor collision-tested —
+  deferred on purpose (user directive, 2026-08-24) to keep P4-2 scoped to the §6.5 mechanism
+  itself. Both are replaced wholesale, not extended, when P4-4/P4-5 land for real; every call site
+  (`confirmBooking()`, and whatever P4-8/P4-9 add) keeps working unchanged since only the
+  generators' internals change, not their signatures.
+- **`Idempotency-Key` header handling doesn't exist** — a double-submitted confirm is still safe
+  (proven live: the 20-parallel-confirms test), but via the `expires_at`/`state` guard racing
+  correctly, not via `bookings.idempotency_key`. A retried request after the FIRST one already
+  won gets a `410 HOLD_EXPIRED`, not the original booking replayed back — technically correct
+  (nothing double-books) but not the UX §9's `Idempotency-Key` header implies. Lands with P4-3.
+- **`confirmBooking()` doesn't check `shows.status`** — same gap `holds.service.js#createHold()`
+  already has (Phase 3 debt above), inherited rather than newly introduced.
+- **No `customer{}` field in `confirmBookingSchema`**, despite §9 listing
+  `POST /bookings/confirm { holdId, customer{} }` — nothing in the `bookings` table needs customer
+  contact info beyond `user_id` (the authenticated caller). A deliberate simplification, not an
+  oversight; revisit only if a real requirement for it surfaces (e.g. a guest-checkout flow this
+  project doesn't currently plan to build).
 
 ---
 
@@ -484,6 +511,7 @@ Append on every merge to `main`. Keep-a-Changelog format, Conventional Commits.
 | 2026-08-24 | `/close-phase 3` audit + fixes | 1 (see commit hash reported in chat) | First pass found the P3-9 suite proved what it set out to prove but had two real gaps, both falsified live to confirm they were real before being fixed, not assumed. **(1)** `holdExpiry.test.js` only covered the READ side of "seats free themselves" — removing `acquireSeats()`'s `HELD`-and-expired OR-branch left the whole e2e suite green. Added a write-side test (user B's real `POST /holds` reclaims a seat whose `expires_at` lapsed under user A's hold); falsified the same way, confirmed it now fails for the right reason, restored, confirmed `git status` clean. **(2)** P3-4's `releaseHold()` had no permanent test at all, only session-script transcripts. Added `tests/e2e/holds.test.js` (idempotent double/triple release, non-owner 403, stale-holdId safety); falsified the stale-holdId case specifically by changing `markSeatHoldReleased()`'s predicate to match "the show's active hold" instead of "this hold's own id" — caught a live, unrelated hold's `ACTIVE` row silently flipping to `RELEASED`, exactly the corruption mode CLAUDE.md's commenting standard on that function warns about; restored, confirmed clean. Also added the three Decisions Ledger entries the audit's point 7 found missing: D-40 (`assertTransition()` has no production call site — a design boundary, not an oversight, naming Phase 4/5 as where it will actually be exercised), D-41 (`MAX_SEATS_PER_BOOKING` enforced in the service layer, not the shared schema), D-42 (`requireOwnership` wired on `DELETE /holds/:id`). Second pass re-audited only these points: **CLEAR**. `npm run test:unit` 31/31, `npm run test:e2e` 8/8 (3 files), `npm run lint` clean. Full transcripts in `docs/TESTING.md`. `phase/3-holds-concurrency` fast-forward merged to `main`, tagged `v0.3.0-phase3`, both pushed. **Phase 3 closed (deliberately partial — P3-5..P3-8 still deferred to post-Phase-5).** | 2 (fixes, then this doc update) |
 | 2026-08-24 | Phase 4/5 reorder (user directive) | 1 (see commit hash reported in chat) | User directed P4-2 (`confirmBooking`) and P4-8 (`cancelBooking`) to move ahead of the rest of Phase 4, with ALL of Phase 5 built immediately after, since §7.2/§7.3's cascade and offer-acceptance flow are built directly on `cancelBooking()`/`confirmBooking()`. While updating `docs/BUILD_LOG.md` to record this, found a real (not just numerical) dependency: `bookings.reference`/`qr_token` are `NOT NULL`, so P4-4 (reference generator) and P4-5 (QR service) are hard prerequisites of P4-2; `cancelBooking()`'s own "refund" requirement pulls P4-1 (mock payments) forward too. Documented the real build order (P4-4 → P4-5 → P4-1 → P4-2 → P4-8 → Phase 5 → rest of Phase 4) directly in the Phase 4 table rather than silently reordering rows. Branched `phase/4-booking-qr` off `main`. No code changes. | P4-1 (lowest-numbered unblocked task per `next-task`'s own rule) |
 | 2026-08-24 | `/next-task` → P4-1 | 1 (see commit hash reported in chat) | Plan mode used per CLAUDE.md's Phase 3/4/5 rule. Built `payments.queries.js`/`payments.service.js` — `authorizeAndCapture()` (two writes, `AUTHORIZED` then `CAPTURED`, in the same transaction, modelling the boundary a real PSP would have per §3.1) and `refund()` (idempotent by predicate, same idiom as `holds.service.js#releaseHold`). Neither throws `DomainError` — nothing calls this module over HTTP; it's a transaction participant for P4-2/P4-8 to call into. `assertTransition()` deliberately NOT touched here (D-40 named `confirmBooking`/`cascadeOffer` as its call sites, not payments). Test lives in `tests/e2e/payments.test.js`, not `tests/unit/` (D-43) — no bookings module exists yet, so the test constructs its own minimal, valid `bookings` row directly via `pool.query` against real FK constraints. **Falsified live**: dropped `markPaymentRefunded`'s `AND status = 'CAPTURED'` guard, the double-refund test correctly failed (a row came back instead of `null`); restored. `npm run test:unit` 31/31, `npm run test:e2e` 10/10 (4 files), `npm run lint` clean. **P4-1 complete, 1/9.** | P4-4 |
+| 2026-08-24 | Ordering correction (user directive) + `/next-task` → P4-2 | 1 (see commit hash reported in chat) | User corrected the prior session's plan: skip P4-4/P4-5's full builds for now, inline placeholder reference/QR generation in `confirmBooking()` instead (tracked as Phase 4 debt), go straight to P4-2 then P4-8's cancellation half. Updated the Phase 4 ordering note and per-row annotations in `docs/BUILD_LOG.md` to match before starting. Plan mode used for P4-2 itself per CLAUDE.md's Phase 3/4/5 rule. Built the `bookings` module (`bookings.queries.js`/`bookings.service.js`/`bookings.controller.js`/`bookings.routes.js`) — `confirmBooking()` carries the numbered WALKTHROUGH comment CLAUDE.md mandates for this exact function (one of its four named hard mechanisms), and `confirmHeldSeats()` in the queries file carries its own, covering both a double-submit race and a confirm-vs-explicit-release race, composing with P3-4's already-idempotent `releaseHold()` with zero changes on either side. **D-40 made good on**: `assertTransition(HELD, BOOKED)` wired in immediately before the atomic UPDATE (D-44 records the design nuance — trivially true today, earns its keep once Phase 5's offer-accept reuses the same shape with a different `fromState`). `markSeatHoldReleased()` reused as-is for the `'CONVERTED'` outcome (widened JSDoc union, no new query). §6.6's two booking-blocked scenarios (confirm at `expires_at+1ms`, 20 parallel confirms) built and proven in the new `tests/e2e/bookingFlow.test.js`, previously tracked as blocked in that table. **Falsified live**: dropped `confirmHeldSeats()`'s `AND expires_at > now()`, the TTL test correctly failed (`201` instead of `410`); restored. `npm run test:unit` 31/31, `npm run test:e2e` 13/13 (5 files), `npm run lint` clean. **P4-2 complete, 2/9.** Per the user's explicit instruction, stopped here without starting P4-8. | P4-8 (cancellation half only) |
 
 ---
 

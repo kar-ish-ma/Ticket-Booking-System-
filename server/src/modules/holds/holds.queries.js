@@ -174,14 +174,22 @@ export async function releaseHoldSeats(client, holdId) {
 }
 
 /**
- * Marks the `seat_holds` row itself released. Keyed on `id = $1` — this row's OWN primary key,
+ * Marks the `seat_holds` row itself terminal. Keyed on `id = $1` — this row's OWN primary key,
  * never on which seats it governs — so this can only ever touch hold `$1`'s own bookkeeping row,
  * regardless of what releaseHoldSeats() above did or didn't find. `status = 'ACTIVE'` in the
  * WHERE clause is what makes a second call a no-op instead of re-writing an already-terminal row.
  *
+ * WHY this function's name still says "Released" even though `'CONVERTED'` (P4-2,
+ * bookings.service.js#confirmBooking) is also a legal `status` here: the SQL is identical for all
+ * three terminal outcomes (`id = $1 AND status = 'ACTIVE'`), and reusing one function under its
+ * original name beat duplicating the same query under a second name just to keep the name
+ * perfectly literal — a call site reads `markSeatHoldReleased(client, holdId, 'CONVERTED')`, which
+ * is legible enough in context (a hold ending because it became a booking is still, in every
+ * sense that matters to this row, a release of the hold's own claim).
+ *
  * @param {import('pg').PoolClient} client
  * @param {string} holdId
- * @param {'RELEASED' | 'EXPIRED'} status
+ * @param {'RELEASED' | 'EXPIRED' | 'CONVERTED'} status
  * @returns {Promise<boolean>} true if this call is what transitioned the row (false on a
  *   second/idempotent call, or a holdId that never existed)
  */
