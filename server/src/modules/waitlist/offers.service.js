@@ -8,18 +8,29 @@
  *
  * Does NOT own: the SQL itself (offers.queries.js), picking who gets offered a seat
  * (waitlist.queries.js#claimNextWaitingEntry, already run by the caller before this is invoked),
- * verifying a PRESENTED token against a stored hash at accept time (P5-5, not built yet -- this
- * file only knows how to MINT a token, not validate one back), or the cascade re-offer that mints
- * a fresh token for the same seats after this offer lapses (dropped -- see docs/BUILD_LOG.md's
- * Phase 5 scope decision, 2026-08-24; §7.4's cascade is designed but not wired).
+ * or the cascade re-offer that mints a fresh token for the same seats after this offer lapses
+ * (dropped -- see docs/BUILD_LOG.md's Phase 5 scope decision, 2026-08-24; §7.4's cascade is
+ * designed but not wired). `getOfferByToken()`/`acceptOffer()` (P5-5) verify a PRESENTED token
+ * against the stored hash and, on accept, mint the booking the same way
+ * bookings.service.js#confirmBooking does for a hold.
  */
 
 import crypto from 'node:crypto';
 
+import { pool } from '../../db/pool.js';
+import { withTransaction } from '../../db/withTransaction.js';
+import { env } from '../../config/env.js';
 import { SEAT_STATES } from 'shared/seatStates.js';
 import { assertTransition } from '../seatmap/seatState.machine.js';
+import { OfferInvalidError, OfferExpiredError } from '../../utils/errors.js';
 import * as offersQueries from './offers.queries.js';
 import * as waitlistQueries from './waitlist.queries.js';
+import * as bookingsQueries from '../bookings/bookings.queries.js';
+import * as paymentsService from '../payments/payments.service.js';
+import {
+  generatePlaceholderReference,
+  generatePlaceholderQrToken,
+} from '../bookings/bookings.service.js';
 
 /**
  * The literal docs/PROJECT_PROMPT.md §7.3 shape: a raw token embedding the offer's own id (so a
@@ -119,4 +130,118 @@ export async function createInitialOffer(
   await waitlistQueries.markEntryOffered(client, waitlistEntryId);
 
   return { seats, offer, rawToken };
+}
+
+/**
+ * @param {string} rawToken
+ * @returns {Promise<{ seats: object[], subtotalCents: number, totalCents: number, secondsRemaining: number, showId: string, categoryId: string }>}
+ * @throws {OfferInvalidError} no offer matches this token's hash, or it isn't PENDING
+ * @throws {OfferExpiredError} the offer is PENDING but its expires_at has passed
+ */
+export async function getOfferByToken(rawToken) {
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+  const offer = await offersQueries.findOfferByTokenHash(pool, tokenHash);
+  if (!offer || offer.status !== 'PENDING') throw new OfferInvalidError();
+  if (offer.isExpired) throw new OfferExpiredError();
+
+  const seats = await offersQueries.findOfferSeatsByIds(pool, offer.showSeatIds);
+  const subtotalCents = seats.reduce((sum, seat) => sum + (seat.priceCents ?? 0), 0);
+  const feesCents = Math.round((subtotalCents * env.BOOKING_FEE_PERCENT) / 100);
+
+  return {
+    seats,
+    subtotalCents,
+    totalCents: subtotalCents + feesCents,
+    secondsRemaining: offer.secondsRemaining,
+    showId: seats[0]?.showId,
+    categoryId: seats[0]?.categoryId,
+  };
+}
+
+/**
+ * WALKTHROUGH: acceptOffer(), reusing confirmBooking()'s guarded-transaction shape (D-40) with a
+ * genuinely different `fromState` at last
+ *
+ * 1. Look up the offer by token hash (not FOR UPDATE -- advisory, same reasoning as
+ *    bookings.queries.js#findHoldSeats: the correctness boundary is step 5's atomic UPDATE, not
+ *    this read). Not found, or not PENDING, or expired -> OfferInvalidError/OfferExpiredError
+ *    before any write -- mirrors confirmBooking()'s immediate HoldExpiredError for an empty
+ *    findHoldSeats() result.
+ * 2. Look up the offeree's own userId via the offer's waitlistEntryId -- this endpoint is public,
+ *    token-authenticated (§7.3), not `requireAuth`-gated, so there is no req.user to fall back on;
+ *    the token itself is the authorization, exactly like the entry it names.
+ * 3. Insert the booking (status CONFIRMED directly, same reasoning as confirmBooking() -- this
+ *    mock gateway never declines) and capture payment, reusing confirmBooking()'s own placeholder
+ *    reference/QR generators rather than a second copy.
+ * 4. assertTransition(OFFER_RESERVED, BOOKED) -- the D-40 call site this codebase has been
+ *    carrying a comment about since P4-2: this is the FIRST place `fromState` is something other
+ *    than the literal HELD confirmBooking() always passes.
+ * 5. offers.queries.js#confirmOfferSeats() -- the atomic guarded UPDATE, gated on
+ *    `state = 'OFFER_RESERVED' AND expires_at > now()` for this offer's EXACT seat ids. This is
+ *    the real single-use boundary: a double-accept race (the same token POSTed twice) has both
+ *    transactions target the identical seat set, so the loser's predicate matches nothing once the
+ *    winner commits -- see that function's own WALKTHROUGH.
+ * 6. A short RETURNING (including empty) rolls back the whole transaction --
+ *    booking/payment/nothing survives -- and reports OfferInvalidError, same shortfall idiom as
+ *    confirmBooking()'s own step 6.
+ * 7. bookings.queries.js#insertBookingSeats() -- the historical price record, same as every other
+ *    booking path.
+ * 8. offers.queries.js#markOfferAccepted() / waitlist.queries.js#markEntryConverted() --
+ *    bookkeeping, predicate-gated for idempotency, not the correctness boundary (step 5 already
+ *    is).
+ *
+ * @param {string} rawToken
+ * @returns {Promise<{ booking: object, seats: object[] }>}
+ * @throws {OfferInvalidError} no offer matches this token's hash, it isn't PENDING, or a
+ *   concurrent accept already won the seat-level race
+ * @throws {OfferExpiredError} the offer is PENDING but its expires_at has passed
+ */
+export async function acceptOffer(rawToken) {
+  const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+
+  return withTransaction(async (client) => {
+    const offer = await offersQueries.findOfferByTokenHash(client, tokenHash);
+    if (!offer || offer.status !== 'PENDING') throw new OfferInvalidError();
+    if (offer.isExpired) throw new OfferExpiredError();
+
+    const entry = await waitlistQueries.findEntryById(client, offer.waitlistEntryId);
+    const seats = await offersQueries.findOfferSeatsByIds(client, offer.showSeatIds);
+
+    const subtotalCents = seats.reduce((sum, seat) => sum + (seat.priceCents ?? 0), 0);
+    const feesCents = Math.round((subtotalCents * env.BOOKING_FEE_PERCENT) / 100);
+    const totalCents = subtotalCents + feesCents;
+
+    const booking = await bookingsQueries.insertBooking(client, {
+      reference: generatePlaceholderReference(),
+      showId: entry.showId,
+      userId: entry.userId,
+      subtotalCents,
+      feesCents,
+      totalCents,
+      qrToken: generatePlaceholderQrToken(),
+    });
+
+    await paymentsService.authorizeAndCapture(client, { bookingId: booking.id, amountCents: totalCents });
+
+    // The D-40 call site -- see this function's own WALKTHROUGH step 4.
+    assertTransition(SEAT_STATES.OFFER_RESERVED, SEAT_STATES.BOOKED);
+
+    const confirmedSeatIds = await offersQueries.confirmOfferSeats(client, {
+      showSeatIds: offer.showSeatIds,
+      bookingId: booking.id,
+    });
+    if (confirmedSeatIds.length < offer.showSeatIds.length) {
+      throw new OfferInvalidError();
+    }
+
+    await bookingsQueries.insertBookingSeats(
+      client,
+      booking.id,
+      seats.map((seat) => ({ showSeatId: seat.showSeatId, priceCents: seat.priceCents }))
+    );
+    await offersQueries.markOfferAccepted(client, offer.id);
+    await waitlistQueries.markEntryConverted(client, entry.id);
+
+    return { booking, seats };
+  });
 }

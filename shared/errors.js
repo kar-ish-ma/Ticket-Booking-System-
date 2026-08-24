@@ -98,4 +98,14 @@ export const ERROR_CODES = Object.freeze({
   // pre-checked (docs/PROJECT_PROMPT.md §7.1). The UI should show the caller's existing position
   // instead of a generic error -- they're already in line, not blocked from joining.
   ALREADY_WAITLISTED: 'ALREADY_WAITLISTED',
+
+  // Thrown by GET/POST /waitlist/offers/:token when the token doesn't match any stored hash, or
+  // matches one whose status isn't PENDING (already ACCEPTED by an earlier request -- single-use
+  // -- or SUPERSEDED). The UI should show "this link is no longer valid," never a retry.
+  OFFER_INVALID: 'OFFER_INVALID',
+
+  // Thrown by the same two routes when the token is otherwise valid but its expires_at has
+  // passed. Distinct from OFFER_INVALID so the UI can say "this offer expired" rather than the
+  // more generic "no longer valid" -- the offeree didn't do anything wrong, the clock just ran out.
+  OFFER_EXPIRED: 'OFFER_EXPIRED',
 });

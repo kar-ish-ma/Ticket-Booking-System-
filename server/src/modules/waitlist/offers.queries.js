@@ -102,3 +102,110 @@ export async function insertWaitlistOffer(
   );
   return mapOfferRow(result.rows[0]);
 }
+
+/**
+ * P5-5's read: looks up an offer by the SHA-256 hash of a presented raw token (offers.service.js
+ * computes the hash; this file never sees the raw value). `isExpired`/`secondsRemaining` are
+ * computed in SQL against Postgres's own `now()`, never the app clock (CLAUDE.md) -- the caller
+ * decides what an expired or non-PENDING result means (OfferInvalidError vs OfferExpiredError),
+ * this function only reports the facts.
+ *
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {string} tokenHash
+ * @returns {Promise<(object & { isExpired: boolean, secondsRemaining: number }) | null>}
+ */
+export async function findOfferByTokenHash(client, tokenHash) {
+  const result = await client.query(
+    `SELECT *, (expires_at <= now()) AS is_expired,
+            GREATEST(0, EXTRACT(EPOCH FROM (expires_at - now())))::int AS seconds_remaining
+       FROM waitlist_offers WHERE token_hash = $1`,
+    [tokenHash]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return { ...mapOfferRow(row), isExpired: row.is_expired, secondsRemaining: row.seconds_remaining };
+}
+
+/**
+ * The seats an offer names, with pricing -- same shape as bookings.queries.js#findHoldSeats, keyed
+ * by an explicit id array (`waitlist_offers.show_seat_ids`) instead of a hold_id, since an offer
+ * has no single parent row on show_seats the way a hold's `hold_id` column gives one. Not `FOR
+ * UPDATE`: same reasoning as findHoldSeats -- this is an advisory read for pricing/display, not
+ * the correctness boundary (confirmOfferSeats() below is).
+ *
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {string[]} showSeatIds
+ * @returns {Promise<Array<{ showSeatId: string, seatId: string, showId: string, categoryId: string, priceCents: number | null, rowLabel: string, seatNumber: number }>>}
+ */
+export async function findOfferSeatsByIds(client, showSeatIds) {
+  const result = await client.query(
+    `SELECT ss.id AS show_seat_id, ss.seat_id, ss.show_id, ss.category_id,
+            sp.price_cents, s.row_label, s.seat_number
+       FROM show_seats ss
+       JOIN seats s ON s.id = ss.seat_id
+       LEFT JOIN show_prices sp ON sp.show_id = ss.show_id AND sp.category_id = ss.category_id
+      WHERE ss.id = ANY($1::uuid[])`,
+    [showSeatIds]
+  );
+  return result.rows.map((row) => ({
+    showSeatId: row.show_seat_id,
+    seatId: row.seat_id,
+    showId: row.show_id,
+    categoryId: row.category_id,
+    priceCents: row.price_cents,
+    rowLabel: row.row_label,
+    seatNumber: row.seat_number,
+  }));
+}
+
+/**
+ * WALKTHROUGH: confirmOfferSeats(), the OFFER_RESERVED -> BOOKED counterpart to
+ * bookings.queries.js#confirmHeldSeats -- reusing the exact same guarded-transaction shape D-40
+ * anticipated, this time with `fromState` genuinely different (OFFER_RESERVED, not HELD).
+ *
+ * 1. One `UPDATE`, gated on `id = ANY($2)` (this offer's exact seats) AND `state = 'OFFER_RESERVED'`
+ *    AND `expires_at > now()` -- the SAME Layer-1 lazy-expiry predicate every other atomic step in
+ *    this codebase uses, so an offer whose window lapsed the instant before this ran is correctly
+ *    rejected without any scheduler needing to have touched the row first.
+ * 2. What a DOUBLE-ACCEPT (the same token POSTed twice, concurrently) experiences: both
+ *    transactions target the identical seat id array. Under READ COMMITTED (§6.2), whichever
+ *    commits first flips every seat to BOOKED; the second's UPDATE blocks on the row lock, then
+ *    re-evaluates `state = 'OFFER_RESERVED'` against the now-BOOKED rows once unblocked -- it no
+ *    longer matches, `RETURNING` comes back short, and offers.service.js#acceptOffer rolls back
+ *    that second transaction's booking insert and payment capture together. This is the actual
+ *    single-use guarantee; `markOfferAccepted()` below is bookkeeping, not the boundary.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {{ showSeatIds: string[], bookingId: string }} params
+ * @returns {Promise<string[]>} show_seat ids actually confirmed -- caller MUST compare this
+ *   length against `showSeatIds.length` and roll back on any shortfall
+ */
+export async function confirmOfferSeats(client, { showSeatIds, bookingId }) {
+  const result = await client.query(
+    `UPDATE show_seats
+        SET state = 'BOOKED', booking_id = $1, expires_at = NULL, reserved_until = NULL, hold_id = NULL,
+            version = version + 1, updated_at = now()
+      WHERE id = ANY($2::uuid[]) AND state = 'OFFER_RESERVED' AND expires_at > now()
+     RETURNING id`,
+    [bookingId, showSeatIds]
+  );
+  return result.rows.map((row) => row.id);
+}
+
+/**
+ * Bookkeeping, not the correctness boundary (confirmOfferSeats() is) -- same idiom as
+ * holds.queries.js#markSeatHoldReleased: predicate-gated (`status = 'PENDING'`) so a second call
+ * (which shouldn't happen, since confirmOfferSeats() already rejects a second accept) is a no-op
+ * rather than an error.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} offerId
+ * @returns {Promise<object | null>}
+ */
+export async function markOfferAccepted(client, offerId) {
+  const result = await client.query(
+    `UPDATE waitlist_offers SET status = 'ACCEPTED' WHERE id = $1 AND status = 'PENDING' RETURNING *`,
+    [offerId]
+  );
+  return mapOfferRow(result.rows[0]);
+}

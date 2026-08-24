@@ -42,6 +42,7 @@ import { seatmapRouter } from './modules/seatmap/seatmap.routes.js';
 import { holdsRouter } from './modules/holds/holds.routes.js';
 import { bookingsRouter } from './modules/bookings/bookings.routes.js';
 import { showWaitlistRouter } from './modules/waitlist/waitlist.routes.js';
+import { offersRouter } from './modules/waitlist/offers.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -106,7 +107,20 @@ app.use('/api/v1/bookings', bookingsRouter);
 // with P5-2/P5-5's GET /me, DELETE /, and offer-claim routes, none of which belong to showsRouter's
 // own concerns (show CRUD/publish).
 app.use('/api/v1/shows/:showId/waitlist', showWaitlistRouter);
+// WHY a separate, flat mount instead of nesting under showWaitlistRouter: these two routes are
+// addressed purely by :token (docs/PROJECT_PROMPT.md §9's literal `/waitlist/offers/:token`
+// shape), with no showId in the URL at all — see offers.routes.js's own header.
+app.use('/api/v1/waitlist/offers', offersRouter);
 mountSwagger(app);
+
+// WHY this route exists at all, ahead of express.static: mail/mailer.js#sendWaitlistOfferEmail
+// builds the claim link as `${WEB_URL}/waitlist/claim/${rawToken}` (§7.3) — a client-side path,
+// not a real file on disk. express.static alone would 404 it (no client/waitlist/claim/<token>
+// file exists), so this serves the SAME index.html for that one path shape; the client's own JS
+// reads the token out of the URL on load (client/index.html's boot sequence).
+app.get('/waitlist/claim/:token', (req, res) => {
+  res.sendFile(path.join(CLIENT_DIR, 'index.html'));
+});
 
 // WHY mounted after every /api/v1 and /health route, not before: express.static falls through
 // (calls next()) for any request that doesn't match a real file, so ordering it first would be

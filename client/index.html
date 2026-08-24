@@ -299,6 +299,20 @@
     </table>
     <p class="muted" id="sumTotals"></p>
   </section>
+
+  <!-- Waitlist claim link (§7.3) -->
+  <section id="view-claim">
+    <h2>A seat opened up</h2>
+    <div class="card">
+      <div id="claimBody">
+        <table id="claimSeats"></table>
+        <p class="muted" id="claimTotal"></p>
+        <div id="claimCountdown" style="font-size:32px;font-weight:700;text-align:center;margin:10px 0;"></div>
+        <button id="claimAcceptBtn">Accept — book these seats</button>
+      </div>
+      <div class="error" id="claimError"></div>
+    </div>
+  </section>
 </main>
 
 <script>
@@ -781,6 +795,76 @@
     }
   }
 
+  // ---- waitlist claim link (§7.3) --------------------------------------------
+  // GET/POST /api/v1/waitlist/offers/:token are public, token-authenticated routes -- no login
+  // required, so this path is handled entirely separately from restoreSession()'s normal boot.
+  const claimState = { token: null, countdownTimer: null };
+
+  async function openClaim(token) {
+    claimState.token = token;
+    showView('view-claim');
+    setText('claimError', '');
+    try {
+      const offer = await api('/waitlist/offers/' + token);
+      document.getElementById('claimBody').style.display = '';
+
+      const table = document.getElementById('claimSeats');
+      table.textContent = '';
+      for (const seat of offer.seats) {
+        const tr = document.createElement('tr');
+        const td1 = document.createElement('td');
+        td1.textContent = 'Seat ' + seat.rowLabel + seat.seatNumber;
+        const td2 = document.createElement('td');
+        td2.textContent = '$' + ((seat.priceCents ?? 0) / 100).toFixed(2);
+        tr.appendChild(td1);
+        tr.appendChild(td2);
+        table.appendChild(tr);
+      }
+      setText('claimTotal', 'Total: $' + (offer.totalCents / 100).toFixed(2));
+      startClaimCountdown(offer.secondsRemaining);
+    } catch (err) {
+      document.getElementById('claimBody').style.display = 'none';
+      setText('claimError', err.message);
+    }
+  }
+
+  function startClaimCountdown(secondsRemaining) {
+    if (claimState.countdownTimer) clearInterval(claimState.countdownTimer);
+    const el = document.getElementById('claimCountdown');
+    let secs = secondsRemaining;
+    function tick() {
+      if (secs <= 0) {
+        el.textContent = 'Expired';
+        el.className = 'red';
+        clearInterval(claimState.countdownTimer);
+        setText('claimError', 'This offer has expired.');
+        document.getElementById('claimAcceptBtn').disabled = true;
+        return;
+      }
+      el.textContent = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+      el.className = secs <= 15 ? 'red' : secs <= 60 ? 'amber' : '';
+      secs -= 1;
+    }
+    tick();
+    claimState.countdownTimer = setInterval(tick, 1000);
+  }
+
+  document.getElementById('claimAcceptBtn').onclick = async () => {
+    setText('claimError', '');
+    try {
+      const result = await api('/waitlist/offers/' + claimState.token + '/accept', { method: 'POST' });
+      if (claimState.countdownTimer) clearInterval(claimState.countdownTimer);
+      showConfirmation(result);
+    } catch (err) {
+      setText('claimError', err.message);
+    }
+  };
+
   // ---- boot -----------------------------------------------------------------
-  restoreSession();
+  const claimMatch = window.location.pathname.match(/^\/waitlist\/claim\/(.+)$/);
+  if (claimMatch) {
+    openClaim(decodeURIComponent(claimMatch[1]));
+  } else {
+    restoreSession();
+  }
 </script>

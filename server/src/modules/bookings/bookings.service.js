@@ -28,19 +28,24 @@ import * as paymentsService from '../payments/payments.service.js';
 import * as waitlistQueries from '../waitlist/waitlist.queries.js';
 import * as offersService from '../waitlist/offers.service.js';
 
-// WHY these two generators live here, inline and unexported, instead of in their own files:
-// docs/BUILD_LOG.md's P4-2 row records this explicitly as Phase 4 debt, not a finished feature.
-// bookings.reference and bookings.qr_token are both NOT NULL (004_bookings.sql), so
+// WHY these two generators live here, exported but otherwise unchanged, instead of in their own
+// files: docs/BUILD_LOG.md's P4-2 row records this explicitly as Phase 4 debt, not a finished
+// feature. bookings.reference and bookings.qr_token are both NOT NULL (004_bookings.sql), so
 // confirmBooking() needs SOMETHING here today -- but the real P4-4 (Crockford base32, no
 // ambiguous characters, a 100k-collision unit test) and P4-5 (signed JWT -> PNG buffer) were
 // deliberately skipped for now (user directive) to keep this task scoped to the mechanism §6.5 is
 // actually about. Neither generator here is cryptographically meaningful or collision-tested;
-// both are replaced wholesale, not extended, when P4-4/P4-5 are built for real.
-function generatePlaceholderReference() {
+// both are replaced wholesale, not extended, when P4-4/P4-5 are built for real. Exported (not just
+// module-private) as of P5-5, which mints a booking the same way confirmBooking() does when an
+// offer is accepted -- reusing these rather than a second copy that would drift when P4-4/P4-5
+// eventually replace this one.
+/** @returns {string} a placeholder booking reference -- see this section's own header */
+export function generatePlaceholderReference() {
   return `TB-${crypto.randomBytes(6).toString('hex').toUpperCase()}`;
 }
 
-function generatePlaceholderQrToken() {
+/** @returns {string} a placeholder QR token -- see this section's own header */
+export function generatePlaceholderQrToken() {
   return `QR-${crypto.randomUUID()}`;
 }
 

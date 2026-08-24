@@ -147,3 +147,20 @@ export class AlreadyWaitlistedError extends DomainError {
     super(message, { status: 409, code: ERROR_CODES.ALREADY_WAITLISTED });
   }
 }
+
+// WHY 410, same reasoning as HoldExpiredError: a token that doesn't match any stored hash, or
+// matches an offer that isn't PENDING (already ACCEPTED -- single-use -- or SUPERSEDED), named a
+// resource that existed once but is permanently done being claimable under this token.
+export class OfferInvalidError extends DomainError {
+  constructor(message = 'This offer is no longer valid') {
+    super(message, { status: 410, code: ERROR_CODES.OFFER_INVALID });
+  }
+}
+
+// Split from OfferInvalidError so the UI can say "this expired" rather than the more generic "no
+// longer valid" -- same token/hash match, same PENDING status, just past its expires_at.
+export class OfferExpiredError extends DomainError {
+  constructor(message = 'This offer has expired') {
+    super(message, { status: 410, code: ERROR_CODES.OFFER_EXPIRED });
+  }
+}

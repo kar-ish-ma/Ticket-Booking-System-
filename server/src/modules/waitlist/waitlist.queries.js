@@ -162,3 +162,33 @@ export async function markEntryOffered(client, entryId) {
   );
   return mapEntryRow(result.rows[0]);
 }
+
+/**
+ * P5-5's lookup: the offeree's own userId lives on `waitlist_entries`, not `waitlist_offers` --
+ * offers.service.js#acceptOffer needs it to attach the resulting booking to the right user, since
+ * the accept endpoint is public/token-authenticated (§7.3), not `requireAuth`-gated.
+ *
+ * @param {import('pg').PoolClient | import('pg').Pool} client
+ * @param {string} entryId
+ * @returns {Promise<object | null>}
+ */
+export async function findEntryById(client, entryId) {
+  const result = await client.query(`SELECT * FROM waitlist_entries WHERE id = $1`, [entryId]);
+  return mapEntryRow(result.rows[0]);
+}
+
+/**
+ * The offer-accept counterpart to markEntryOffered() -- `WHERE status = 'OFFERED'` is what makes
+ * this predicate-idempotent the same way, not a special-cased guard.
+ *
+ * @param {import('pg').PoolClient} client
+ * @param {string} entryId
+ * @returns {Promise<object | null>}
+ */
+export async function markEntryConverted(client, entryId) {
+  const result = await client.query(
+    `UPDATE waitlist_entries SET status = 'CONVERTED' WHERE id = $1 AND status = 'OFFERED' RETURNING *`,
+    [entryId]
+  );
+  return mapEntryRow(result.rows[0]);
+}
