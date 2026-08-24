@@ -136,3 +136,14 @@ export class HoldExpiredError extends DomainError {
     super(message, { status: 410, code: ERROR_CODES.HOLD_EXPIRED });
   }
 }
+
+// WHY 409, not 422: the request shape and every rule the schema can express are fine -- the
+// conflict is with EXISTING data (a row this exact user/show/category already has), which is
+// what 409's HTTP semantics describe. Same family as ConflictError, but a dedicated class because
+// unlike Phase 2's generic CONFLICT (see that class's own comment), the UI genuinely needs to
+// react differently here: show the caller's current position, not "try a different name."
+export class AlreadyWaitlistedError extends DomainError {
+  constructor(message = 'You are already on the waitlist for this category') {
+    super(message, { status: 409, code: ERROR_CODES.ALREADY_WAITLISTED });
+  }
+}

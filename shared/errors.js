@@ -92,4 +92,10 @@ export const ERROR_CODES = Object.freeze({
   // an earlier request (a double-submit racing itself). The UI should treat this like the hold's
   // countdown reached zero: send the customer back to seat selection, never silently retry.
   HOLD_EXPIRED: 'HOLD_EXPIRED',
+
+  // Thrown by POST /shows/:id/waitlist when this user already has a waitlist_entries row for this
+  // (show, category) -- the UNIQUE (show_id, category_id, user_id) constraint, caught rather than
+  // pre-checked (docs/PROJECT_PROMPT.md §7.1). The UI should show the caller's existing position
+  // instead of a generic error -- they're already in line, not blocked from joining.
+  ALREADY_WAITLISTED: 'ALREADY_WAITLISTED',
 });

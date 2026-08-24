@@ -34,6 +34,7 @@ import { eventShowsRouter, showsRouter } from './modules/shows/shows.routes.js';
 import { seatmapRouter } from './modules/seatmap/seatmap.routes.js';
 import { holdsRouter } from './modules/holds/holds.routes.js';
 import { bookingsRouter } from './modules/bookings/bookings.routes.js';
+import { showWaitlistRouter } from './modules/waitlist/waitlist.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const app = express();
@@ -71,6 +72,11 @@ app.use('/api/v1/shows', showsRouter);
 app.use('/api/v1/shows', seatmapRouter);
 app.use('/api/v1/holds', holdsRouter);
 app.use('/api/v1/bookings', bookingsRouter);
+// WHY mounted the same way as eventShowsRouter (a mergeParams router scoped by a URL segment)
+// rather than nested under showsRouter directly: this router only handles POST / today and grows
+// with P5-2/P5-5's GET /me, DELETE /, and offer-claim routes, none of which belong to showsRouter's
+// own concerns (show CRUD/publish).
+app.use('/api/v1/shows/:showId/waitlist', showWaitlistRouter);
 mountSwagger(app);
 
 // WHY a 404 handler here, before the error handler:
