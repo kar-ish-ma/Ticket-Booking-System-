@@ -11,11 +11,18 @@
  * of app.listen()), the job queue poller (P1-4), the dedicated LISTEN client (P3-6), or
  * graceful-shutdown draining of in-flight holds (P9-4, meaningless before holds exist).
  *
+ * Also owns serving the static client (Decisions Ledger D-53): client/index.html, one vanilla
+ * file, mounted at `/` via express.static. There is no separate client process or build step —
+ * this IS the client's deploy target.
+ *
  * Invariant: the error handler is always the LAST middleware registered. Express only routes an
  * error to a 4-argument middleware, and only for errors passed to next(err) by something earlier
  * in the chain — anything registered after the error handler would simply never run on an error
  * path.
  */
+
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import express from 'express';
 import helmet from 'helmet';
@@ -37,9 +44,31 @@ import { bookingsRouter } from './modules/bookings/bookings.routes.js';
 import { showWaitlistRouter } from './modules/waitlist/waitlist.routes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// WHY ../../client: this file lives at server/src/app.js, so two levels up (src -> server ->
+// repo root) reaches the repo root, where client/ sits as a sibling of server/ (D-53 — no longer
+// an npm workspace, just a plain static directory).
+const CLIENT_DIR = path.join(__dirname, '../../client');
+
 const app = express();
 
-app.use(helmet());
+app.use(
+  helmet({
+    // WHY script-src needs 'unsafe-inline' here, unlike the Swagger UI page (Decisions Ledger
+    // D-19, which needed no CSP relaxation at all): client/index.html is deliberately ONE file
+    // with its JS inline, not a separate same-origin <script src> file the default 'self'
+    // already covers. The trade-off is scoped to this one directive; every dynamic value the
+    // inline script writes into the DOM goes through textContent, never innerHTML, so relaxing
+    // script-src doesn't itself open an injection path — it only permits the inline block to
+    // run at all.
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        'script-src': ["'self'", "'unsafe-inline'"],
+      },
+    },
+  })
+);
 
 app.use(
   cors({
@@ -78,6 +107,12 @@ app.use('/api/v1/bookings', bookingsRouter);
 // own concerns (show CRUD/publish).
 app.use('/api/v1/shows/:showId/waitlist', showWaitlistRouter);
 mountSwagger(app);
+
+// WHY mounted after every /api/v1 and /health route, not before: express.static falls through
+// (calls next()) for any request that doesn't match a real file, so ordering it first would be
+// harmless for API paths — but ordering it here keeps the routing story readable top-to-bottom:
+// API first, then the one static asset this server also happens to serve.
+app.use(express.static(CLIENT_DIR));
 
 // WHY a 404 handler here, before the error handler:
 // A route that simply doesn't exist doesn't throw — Express falls through every app.use() that

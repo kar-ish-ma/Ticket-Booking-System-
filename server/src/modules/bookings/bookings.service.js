@@ -13,11 +13,12 @@
  */
 
 import crypto from 'node:crypto';
+import QRCode from 'qrcode';
 
 import { withTransaction } from '../../db/withTransaction.js';
 import { env } from '../../config/env.js';
 import { pool } from '../../db/pool.js';
-import { HoldExpiredError } from '../../utils/errors.js';
+import { HoldExpiredError, NotFoundError } from '../../utils/errors.js';
 import { SEAT_STATES } from 'shared/seatStates.js';
 import { assertTransition } from '../seatmap/seatState.machine.js';
 import * as bookingsQueries from './bookings.queries.js';
@@ -279,6 +280,23 @@ export async function cancelBooking({ bookingId }) {
 
     return { cancelled: booking !== null, releasedSeatsByCategory, offersCreated };
   });
+}
+
+/**
+ * GET /bookings/:id/ticket — renders booking.qrToken (still P4-2's placeholder string; see this
+ * file's own generatePlaceholderQrToken() and docs/BUILD_LOG.md's Phase 4 debt) into the same PNG
+ * shape mail/mailer.js#sendBookingConfirmedEmail already embeds inline via CID, so the client's
+ * confirmation screen can show a ticket without waiting on email delivery (§11: "success screen
+ * showing the QR immediately -- don't make them wait for email").
+ *
+ * @param {string} bookingId
+ * @returns {Promise<Buffer>} a PNG buffer
+ * @throws {NotFoundError} if no booking has this id
+ */
+export async function getBookingQrPng(bookingId) {
+  const booking = await bookingsQueries.findBookingById(pool, bookingId);
+  if (!booking) throw new NotFoundError('Booking not found');
+  return QRCode.toBuffer(booking.qrToken, { errorCorrectionLevel: 'H', width: 320 });
 }
 
 /**

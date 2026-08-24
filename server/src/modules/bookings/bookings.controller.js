@@ -87,3 +87,20 @@ export async function cancelBooking(req, res, next) {
     next(err);
   }
 }
+
+/**
+ * GET /api/v1/bookings/:id/ticket — requireOwnership has already run.
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {import('express').NextFunction} next
+ * @returns {Promise<void>}
+ */
+export async function getTicketQr(req, res, next) {
+  try {
+    const png = await bookingsService.getBookingQrPng(req.params.id);
+    res.status(200).type('image/png').send(png);
+  } catch (err) {
+    next(err);
+  }
+}

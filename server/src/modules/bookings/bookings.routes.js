@@ -85,3 +85,23 @@ bookingsRouter.post(
   requireOwnership(loadBookingForOwnership),
   bookingsController.cancelBooking
 );
+
+/**
+ * @openapi
+ * /api/v1/bookings/{id}/ticket:
+ *   get:
+ *     summary: The booking's QR ticket as a PNG (must own it) — same token the confirmation email embeds via CID.
+ *     tags: [Bookings]
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: image/png, content: { image/png: {} } }
+ *       403: { description: Not this booking's owner (FORBIDDEN). }
+ *       404: { description: No booking with this id (NOT_FOUND). }
+ */
+bookingsRouter.get(
+  '/:id/ticket',
+  requireAuth,
+  requireOwnership(loadBookingForOwnership),
+  bookingsController.getTicketQr
+);

@@ -1,0 +1,786 @@
+<!--
+  index.html
+
+  Owns the entire customer-facing client: login/register, event browsing, the live seat map,
+  hold -> countdown -> confirm, and the QR ticket. One file, vanilla JS, no framework, no bundler,
+  no build step (Decisions Ledger D-53) -- served by server/src/app.js via express.static at `/`.
+  "Real-time" here means polling GET /shows/:id/seatmap every 3s, not a Socket.IO push (Phase 6,
+  not built) -- the seat map still converges to server truth within a few seconds, which is the
+  D-53 trade this file exists to make: framework/transport choice was never the scored line item,
+  the seat map working live is.
+
+  Does NOT own: organiser/admin venue or event creation (no screens for it -- the seed script
+  creates demo events/shows instead, see server/src/db/seed.js), the waitlist claim flow (P5-5 is
+  dropped -- nothing in this codebase can resolve a waitlist offer link), or booking history
+  (P4-9 deferred).
+
+  Every value pulled from the server is written into the DOM via textContent/property assignment,
+  never innerHTML with interpolated data -- the one exception is the fixed, hand-written markup
+  strings below, which contain no request-derived values.
+-->
+<title>Ticket Booking</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1220;
+    --panel: #171b2e;
+    --panel-2: #1f2440;
+    --border: #2c3156;
+    --text: #e8eaf6;
+    --muted: #9aa0c3;
+    --accent: #6366f1;
+    --accent-2: #22c55e;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 18px; margin: 0; cursor: pointer; }
+  header .who { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--muted); }
+  main { max-width: 960px; margin: 0 auto; padding: 20px; }
+  section { display: none; }
+  section.active { display: block; }
+  h2 { margin-top: 0; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.secondary { background: var(--panel-2); border: 1px solid var(--border); }
+  button.danger { background: var(--danger); }
+  input, select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+    width: 100%;
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .error { color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 1em; }
+  .muted { color: var(--muted); font-size: 13px; }
+  a.link { color: var(--accent); cursor: pointer; text-decoration: underline; font-size: 13px; }
+  .event-card {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+  }
+  .event-card:hover { border-color: var(--accent); }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    color: var(--muted);
+    margin-right: 6px;
+  }
+  .filters { display: flex; gap: 8px; margin-bottom: 14px; }
+  .filters button { background: var(--panel-2); border: 1px solid var(--border); }
+  .filters button.on { background: var(--accent); border-color: var(--accent); }
+  .show-pick {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  .show-pick:hover { border-color: var(--accent); }
+
+  #screen {
+    width: 60%;
+    max-width: 400px;
+    margin: 0 auto 24px;
+    text-align: center;
+    padding: 6px;
+    border-radius: 4px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  #seatgrid {
+    display: grid;
+    gap: 6px;
+    justify-content: center;
+    margin: 0 auto 16px;
+  }
+  .seat {
+    width: 30px;
+    height: 30px;
+    border-radius: 5px;
+    border: 2px solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    cursor: pointer;
+    color: white;
+    user-select: none;
+  }
+  .seat.AVAILABLE { background: #2f3358; }
+  .seat.HELD { background: #4b3410; cursor: not-allowed; }
+  .seat.OFFER_RESERVED { background: #4b3410; cursor: not-allowed; opacity: 0.6; }
+  .seat.BOOKED { background: #3a3a3a; cursor: not-allowed; opacity: 0.7; }
+  .seat.BLOCKED { background: #222; cursor: not-allowed; opacity: 0.4; }
+  .seat.mine { background: var(--accent); border-color: white; animation: pulse 1.4s infinite; }
+  .seat.selected { border-color: var(--accent-2); }
+  @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.6); } 50% { box-shadow: 0 0 0 5px rgba(99,102,241,0); } }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+  #countdown { font-size: 32px; font-weight: 700; text-align: center; margin: 10px 0; }
+  #countdown.amber { color: var(--warn); }
+  #countdown.red { color: var(--danger); }
+
+  .qr-box { text-align: center; }
+  .qr-box img { background: white; padding: 10px; border-radius: 8px; }
+  .ref { font-size: 22px; font-weight: 700; letter-spacing: 1px; text-align: center; margin: 10px 0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+</style>
+
+<header>
+  <h1 id="brand">Ticket Booking</h1>
+  <div class="who" id="whoBox"></div>
+</header>
+
+<main>
+  <!-- Auth -->
+  <section id="view-auth" class="active">
+    <div class="card" style="max-width:380px;margin:40px auto;">
+      <div class="row" style="margin-bottom:14px;">
+        <button id="tabLogin" class="secondary">Log in</button>
+        <button id="tabRegister" class="secondary">Register</button>
+      </div>
+
+      <form id="loginForm">
+        <label>Email</label>
+        <input id="loginEmail" type="email" required />
+        <label>Password</label>
+        <input id="loginPassword" type="password" required />
+        <button style="margin-top:16px;width:100%;" type="submit">Log in</button>
+        <div class="error" id="loginError"></div>
+      </form>
+
+      <form id="registerForm" style="display:none;">
+        <label>Name</label>
+        <input id="regName" required />
+        <label>Email</label>
+        <input id="regEmail" type="email" required />
+        <label>Password (min 8 characters)</label>
+        <input id="regPassword" type="password" minlength="8" required />
+        <label>Role</label>
+        <select id="regRole">
+          <option value="CUSTOMER">Customer</option>
+          <option value="ORGANISER">Organiser</option>
+        </select>
+        <button style="margin-top:16px;width:100%;" type="submit">Create account</button>
+        <div class="error" id="registerError"></div>
+      </form>
+
+      <p class="muted" style="margin-top:14px;">
+        Demo login: <code>customer@ticketbooking.test</code> / <code>Password123!</code>
+        &nbsp;(also <code>organiser@ticketbooking.test</code>, <code>admin@ticketbooking.test</code>)
+      </p>
+    </div>
+  </section>
+
+  <!-- Event browse -->
+  <section id="view-events">
+    <h2>Now showing</h2>
+    <div class="filters">
+      <button class="filter-btn on" data-type="">All</button>
+      <button class="filter-btn" data-type="MOVIE">Movies</button>
+      <button class="filter-btn" data-type="CONCERT">Concerts</button>
+    </div>
+    <div id="eventList"></div>
+    <div class="error" id="eventsError"></div>
+  </section>
+
+  <!-- Event detail: pick a showtime -->
+  <section id="view-event-detail">
+    <a class="link" id="backToEvents">&larr; Back to events</a>
+    <h2 id="edTitle"></h2>
+    <p class="muted" id="edMeta"></p>
+    <p id="edDescription"></p>
+    <h3>Showtimes</h3>
+    <div id="showList"></div>
+    <div class="error" id="showsError"></div>
+  </section>
+
+  <!-- Seat map + hold + confirm -->
+  <section id="view-seatmap">
+    <a class="link" id="backToEvent">&larr; Back to showtimes</a>
+    <h2 id="smTitle"></h2>
+    <p class="muted" id="smMeta"></p>
+
+    <div id="screen">screen this way</div>
+    <div class="legend" id="legend"></div>
+    <div id="seatgrid"></div>
+
+    <div class="card">
+      <div id="selectionInfo" class="muted">Select up to 6 seats.</div>
+      <button id="holdBtn" disabled>Hold selected seats</button>
+
+      <div id="holdPanel" style="display:none;margin-top:14px;">
+        <div class="muted">Seats held — complete checkout before the timer runs out.</div>
+        <div id="countdown">--:--</div>
+        <div class="row">
+          <button id="confirmBtn">Confirm booking</button>
+          <button id="releaseBtn" class="secondary">Release hold</button>
+        </div>
+      </div>
+      <div class="error" id="holdError"></div>
+    </div>
+  </section>
+
+  <!-- Confirmation -->
+  <section id="view-confirmation">
+    <h2>Booking confirmed</h2>
+    <div class="card">
+      <div class="ref" id="confRef"></div>
+      <div class="qr-box"><img id="confQr" alt="Ticket QR code" width="220" height="220" /></div>
+      <table id="confSeats"></table>
+      <p class="muted" id="confTotal"></p>
+      <div class="row" style="margin-top:14px;">
+        <button id="cancelBookingBtn" class="danger">Cancel this booking</button>
+        <button id="browseMoreBtn" class="secondary">Browse more events</button>
+      </div>
+      <div class="error" id="confError"></div>
+    </div>
+  </section>
+
+  <!-- Organiser summary -->
+  <section id="view-summary">
+    <a class="link" id="backFromSummary">&larr; Back to events</a>
+    <h2 id="sumTitle"></h2>
+    <table>
+      <thead><tr><th>Category</th><th>Sold / total</th><th>Occupancy</th><th>Revenue</th></tr></thead>
+      <tbody id="sumRows"></tbody>
+    </table>
+    <p class="muted" id="sumTotals"></p>
+  </section>
+</main>
+
+<script>
+  // ---- tiny fetch wrapper -------------------------------------------------
+  // Same-origin (client and API share one Express process, D-53), so cookies ride along on every
+  // fetch without needing `credentials: 'include'` -- the browser already treats this as
+  // same-origin and sends them by default.
+  async function api(path, options) {
+    const res = await fetch('/api/v1' + path, {
+      method: (options && options.method) || 'GET',
+      headers: options && options.body ? { 'Content-Type': 'application/json' } : undefined,
+      body: options && options.body ? JSON.stringify(options.body) : undefined,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* e.g. 204 with no body */ }
+    if (!res.ok || !body || !body.success) {
+      const message = (body && body.error && body.error.message) || ('Request failed (' + res.status + ')');
+      const err = new Error(message);
+      err.code = body && body.error && body.error.code;
+      err.details = body && body.error && body.error.details;
+      err.status = res.status;
+      throw err;
+    }
+    return body.data;
+  }
+
+  // ---- app state ------------------------------------------------------------
+  const state = {
+    user: null,
+    eventType: '',
+    currentEvent: null,
+    currentShow: null,
+    seats: [],           // last seatmap read
+    selected: new Set(),  // seatId set, only while no active hold
+    hold: null,            // { id, expiresAt, seatIds }
+    pollTimer: null,
+    countdownTimer: null,
+    lastBookingId: null,
+  };
+
+  const CATEGORY_COLORS = {};
+
+  function showView(id) {
+    document.querySelectorAll('main > section').forEach((s) => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    if (id !== 'view-seatmap') stopPolling();
+  }
+
+  function setText(id, text) { document.getElementById(id).textContent = text; }
+
+  // ---- header / session -------------------------------------------------
+  function renderWho() {
+    const box = document.getElementById('whoBox');
+    box.textContent = '';
+    if (!state.user) return;
+    const span = document.createElement('span');
+    span.textContent = state.user.name + ' (' + state.user.role + ')';
+    const logout = document.createElement('button');
+    logout.className = 'secondary';
+    logout.textContent = 'Log out';
+    logout.style.marginLeft = '10px';
+    logout.onclick = async () => {
+      await api('/auth/logout', { method: 'POST' });
+      state.user = null;
+      renderWho();
+      showView('view-auth');
+    };
+    box.appendChild(span);
+    box.appendChild(logout);
+  }
+
+  async function restoreSession() {
+    try {
+      const { user } = await api('/auth/me');
+      state.user = user;
+      renderWho();
+      showView('view-events');
+      loadEvents();
+    } catch {
+      showView('view-auth');
+    }
+  }
+
+  document.getElementById('brand').onclick = () => {
+    if (state.user) { showView('view-events'); loadEvents(); }
+  };
+
+  // ---- auth forms ---------------------------------------------------------
+  document.getElementById('tabLogin').onclick = () => {
+    document.getElementById('loginForm').style.display = '';
+    document.getElementById('registerForm').style.display = 'none';
+  };
+  document.getElementById('tabRegister').onclick = () => {
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('registerForm').style.display = '';
+  };
+
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    setText('loginError', '');
+    try {
+      const { user } = await api('/auth/login', {
+        method: 'POST',
+        body: {
+          email: document.getElementById('loginEmail').value,
+          password: document.getElementById('loginPassword').value,
+        },
+      });
+      state.user = user;
+      renderWho();
+      showView('view-events');
+      loadEvents();
+    } catch (err) {
+      setText('loginError', err.message);
+    }
+  });
+
+  document.getElementById('registerForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    setText('registerError', '');
+    try {
+      const { user } = await api('/auth/register', {
+        method: 'POST',
+        body: {
+          name: document.getElementById('regName').value,
+          email: document.getElementById('regEmail').value,
+          password: document.getElementById('regPassword').value,
+          role: document.getElementById('regRole').value,
+        },
+      });
+      state.user = user;
+      renderWho();
+      showView('view-events');
+      loadEvents();
+    } catch (err) {
+      setText('registerError', err.message);
+    }
+  });
+
+  // ---- event browse ---------------------------------------------------------
+  document.querySelectorAll('.filter-btn').forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll('.filter-btn').forEach((b) => b.classList.remove('on'));
+      btn.classList.add('on');
+      state.eventType = btn.dataset.type;
+      loadEvents();
+    };
+  });
+
+  async function loadEvents() {
+    setText('eventsError', '');
+    const list = document.getElementById('eventList');
+    list.textContent = 'Loading...';
+    try {
+      const params = state.eventType ? '?type=' + state.eventType : '';
+      const { events } = await api('/events' + params);
+      list.textContent = '';
+      if (events.length === 0) {
+        list.textContent = 'Nothing published yet.';
+        return;
+      }
+      for (const ev of events) {
+        const card = document.createElement('div');
+        card.className = 'card event-card';
+
+        const left = document.createElement('div');
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = ev.type;
+        const title = document.createElement('strong');
+        title.textContent = ev.title;
+        left.appendChild(badge);
+        left.appendChild(title);
+        const desc = document.createElement('div');
+        desc.className = 'muted';
+        desc.textContent = ev.description;
+        left.appendChild(document.createElement('br'));
+        left.appendChild(desc);
+
+        card.appendChild(left);
+
+        if (state.user && state.user.role === 'ORGANISER' && ev.organiserId === state.user.id) {
+          const sumBtn = document.createElement('button');
+          sumBtn.className = 'secondary';
+          sumBtn.textContent = 'Summary';
+          sumBtn.onclick = (evt) => { evt.stopPropagation(); openSummary(ev.id, ev.title); };
+          card.appendChild(sumBtn);
+        }
+
+        card.onclick = () => openEvent(ev.id);
+        list.appendChild(card);
+      }
+    } catch (err) {
+      setText('eventsError', err.message);
+    }
+  }
+
+  // ---- event detail / showtimes -----------------------------------------
+  document.getElementById('backToEvents').onclick = () => showView('view-events');
+
+  async function openEvent(eventId) {
+    setText('showsError', '');
+    try {
+      const [{ event }, { shows }] = await Promise.all([
+        api('/events/' + eventId),
+        api('/events/' + eventId + '/shows'),
+      ]);
+      state.currentEvent = event;
+      setText('edTitle', event.title);
+      setText('edMeta', event.type + ' · ' + event.durationMin + ' min');
+      setText('edDescription', event.description);
+
+      const list = document.getElementById('showList');
+      list.textContent = '';
+      if (shows.length === 0) list.textContent = 'No showtimes scheduled.';
+      for (const show of shows) {
+        const row = document.createElement('div');
+        row.className = 'show-pick';
+        const left = document.createElement('span');
+        left.textContent = new Date(show.startsAt).toLocaleString() + ' — ' + show.venue.name + ' (' + show.venue.city + ')';
+        const right = document.createElement('span');
+        right.className = 'muted';
+        right.textContent = show.status;
+        row.appendChild(left);
+        row.appendChild(right);
+        row.onclick = () => openShow(show.id);
+        list.appendChild(row);
+      }
+      showView('view-event-detail');
+    } catch (err) {
+      setText('showsError', err.message);
+    }
+  }
+
+  document.getElementById('backToEvent').onclick = () => showView('view-event-detail');
+
+  // ---- seat map -----------------------------------------------------------
+  async function openShow(showId) {
+    resetHoldUI();
+    const { show } = await api('/shows/' + showId);
+    state.currentShow = show;
+    setText('smTitle', show.event.title);
+    setText('smMeta', new Date(show.startsAt).toLocaleString() + ' — ' + show.venue.name);
+    showView('view-seatmap');
+    await refreshSeatMap();
+    startPolling();
+  }
+
+  function stopPolling() {
+    if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+  }
+
+  function startPolling() {
+    stopPolling();
+    // WHY 3s, not shorter: the "real-time" requirement client/index.html covers via polling, not
+    // a socket push (Phase 6 isn't built) -- 3s keeps the seat map converging to server truth
+    // quickly without hammering GET /shows/:id/seatmap from every open tab.
+    state.pollTimer = setInterval(refreshSeatMap, 3000);
+  }
+
+  async function refreshSeatMap() {
+    if (!state.currentShow) return;
+    try {
+      // GET /shows/:id/seatmap returns { showId, seats, legend } -- seatmap.service.js#getSeatMap
+      // already derives a legend from the same rows, but this file builds its own inline while
+      // rendering (renderSeatMap below) rather than take a second dependency on that shape.
+      const { seats } = await api('/shows/' + state.currentShow.id + '/seatmap');
+      state.seats = seats;
+      renderSeatMap();
+    } catch {
+      // A transient poll failure shouldn't blow away what's already on screen -- just try again
+      // on the next tick.
+    }
+  }
+
+  function renderSeatMap() {
+    const grid = document.getElementById('seatgrid');
+    const maxRow = Math.max(1, ...state.seats.map((s) => s.gridRow));
+    const maxCol = Math.max(1, ...state.seats.map((s) => s.gridCol));
+    grid.style.gridTemplateColumns = 'repeat(' + maxCol + ', 30px)';
+    grid.style.gridTemplateRows = 'repeat(' + maxRow + ', 30px)';
+    grid.textContent = '';
+
+    const myHoldSeats = new Set(state.hold ? state.hold.seatIds : []);
+    const legendSeen = new Set();
+    const legend = document.getElementById('legend');
+    legend.textContent = '';
+
+    for (const seat of state.seats) {
+      const div = document.createElement('div');
+      const mine = myHoldSeats.has(seat.seatId);
+      div.className = 'seat ' + seat.state + (mine ? ' mine' : '') + (state.selected.has(seat.seatId) ? ' selected' : '');
+      div.style.gridRow = seat.gridRow;
+      div.style.gridColumn = seat.gridCol;
+      div.title = seat.rowLabel + seat.seatNumber + ' — ' + seat.categoryName +
+        (seat.priceCents != null ? ' — $' + (seat.priceCents / 100).toFixed(2) : '');
+      div.textContent = seat.seatNumber;
+      div.style.borderLeftColor = seat.categoryColorHex;
+
+      if (seat.state === 'AVAILABLE' && !state.hold) {
+        div.onclick = () => toggleSeat(seat);
+      }
+      grid.appendChild(div);
+
+      if (!legendSeen.has(seat.categoryName)) {
+        legendSeen.add(seat.categoryName);
+        const item = document.createElement('span');
+        const sw = document.createElement('span');
+        sw.className = 'swatch';
+        sw.style.background = seat.categoryColorHex;
+        item.appendChild(sw);
+        item.appendChild(document.createTextNode(seat.categoryName));
+        legend.appendChild(item);
+      }
+    }
+
+    updateSelectionInfo();
+  }
+
+  function toggleSeat(seat) {
+    if (state.selected.has(seat.seatId)) state.selected.delete(seat.seatId);
+    else if (state.selected.size < 6) state.selected.add(seat.seatId);
+    renderSeatMap();
+  }
+
+  function updateSelectionInfo() {
+    document.getElementById('selectionInfo').textContent =
+      state.selected.size + ' seat(s) selected (max 6).';
+    document.getElementById('holdBtn').disabled = state.selected.size === 0 || !!state.hold;
+  }
+
+  function resetHoldUI() {
+    state.selected = new Set();
+    state.hold = null;
+    document.getElementById('holdPanel').style.display = 'none';
+    document.getElementById('holdBtn').style.display = '';
+    setText('holdError', '');
+    stopCountdown();
+  }
+
+  document.getElementById('holdBtn').onclick = async () => {
+    setText('holdError', '');
+    try {
+      const result = await api('/holds', {
+        method: 'POST',
+        body: { showId: state.currentShow.id, seatIds: Array.from(state.selected) },
+      });
+      state.hold = { id: result.hold.id, expiresAt: result.hold.expiresAt, seatIds: result.seatIds };
+      state.selected = new Set();
+      document.getElementById('holdPanel').style.display = '';
+      document.getElementById('holdBtn').style.display = 'none';
+      startCountdown();
+      await refreshSeatMap();
+    } catch (err) {
+      setText('holdError', err.message + (err.details && err.details.conflictingSeats ? ' (' + err.details.conflictingSeats.join(', ') + ')' : ''));
+      await refreshSeatMap();
+    }
+  };
+
+  document.getElementById('releaseBtn').onclick = async () => {
+    if (!state.hold) return;
+    try { await api('/holds/' + state.hold.id, { method: 'DELETE' }); } catch { /* best-effort */ }
+    resetHoldUI();
+    await refreshSeatMap();
+  };
+
+  document.getElementById('confirmBtn').onclick = async () => {
+    if (!state.hold) return;
+    setText('holdError', '');
+    try {
+      const result = await api('/bookings/confirm', { method: 'POST', body: { holdId: state.hold.id } });
+      resetHoldUI();
+      showConfirmation(result);
+    } catch (err) {
+      setText('holdError', err.message);
+      if (err.code === 'HOLD_EXPIRED') {
+        resetHoldUI();
+        await refreshSeatMap();
+      }
+    }
+  };
+
+  // ---- countdown ------------------------------------------------------------
+  function stopCountdown() {
+    if (state.countdownTimer) { clearInterval(state.countdownTimer); state.countdownTimer = null; }
+  }
+
+  function startCountdown() {
+    stopCountdown();
+    const el = document.getElementById('countdown');
+    function tick() {
+      const msLeft = new Date(state.hold.expiresAt).getTime() - Date.now();
+      if (msLeft <= 0) {
+        el.textContent = '0:00';
+        el.className = 'red';
+        stopCountdown();
+        setText('holdError', 'Hold expired — the seats have been released.');
+        resetHoldUI();
+        refreshSeatMap();
+        return;
+      }
+      const secs = Math.floor(msLeft / 1000);
+      el.textContent = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
+      el.className = secs <= 15 ? 'red' : secs <= 60 ? 'amber' : '';
+    }
+    tick();
+    state.countdownTimer = setInterval(tick, 1000);
+  }
+
+  // ---- confirmation ---------------------------------------------------------
+  function showConfirmation(result) {
+    state.lastBookingId = result.booking.id;
+    setText('confRef', result.booking.reference);
+    document.getElementById('confQr').src = '/api/v1/bookings/' + result.booking.id + '/ticket';
+    setText('confTotal', 'Total paid: $' + (result.booking.totalCents / 100).toFixed(2));
+    setText('confError', '');
+
+    const table = document.getElementById('confSeats');
+    table.textContent = '';
+    for (const seat of result.seats) {
+      const tr = document.createElement('tr');
+      const td1 = document.createElement('td');
+      td1.textContent = 'Seat ' + seat.rowLabel + seat.seatNumber;
+      const td2 = document.createElement('td');
+      td2.textContent = '$' + (seat.priceCents / 100).toFixed(2);
+      tr.appendChild(td1);
+      tr.appendChild(td2);
+      table.appendChild(tr);
+    }
+    showView('view-confirmation');
+  }
+
+  document.getElementById('cancelBookingBtn').onclick = async () => {
+    if (!state.lastBookingId) return;
+    setText('confError', '');
+    try {
+      await api('/bookings/' + state.lastBookingId + '/cancel', { method: 'POST' });
+      setText('confError', 'Booking cancelled and refunded. Seats released (or offered to the waitlist).');
+    } catch (err) {
+      setText('confError', err.message);
+    }
+  };
+
+  document.getElementById('browseMoreBtn').onclick = () => { showView('view-events'); loadEvents(); };
+
+  // ---- organiser summary -----------------------------------------------------
+  document.getElementById('backFromSummary').onclick = () => showView('view-events');
+
+  async function openSummary(eventId, title) {
+    setText('sumTitle', title + ' — summary');
+    const rows = document.getElementById('sumRows');
+    rows.textContent = '';
+    try {
+      const summary = await api('/events/' + eventId + '/summary');
+      for (const cat of summary.categories) {
+        const tr = document.createElement('tr');
+        const cells = [
+          cat.categoryName,
+          cat.sold + ' / ' + cat.totalSeats,
+          cat.occupancyPercent + '%',
+          '$' + (cat.revenueCents / 100).toFixed(2),
+        ];
+        for (const val of cells) {
+          const td = document.createElement('td');
+          td.textContent = val;
+          tr.appendChild(td);
+        }
+        rows.appendChild(tr);
+      }
+      setText(
+        'sumTotals',
+        'Total: ' + summary.totals.sold + ' / ' + summary.totals.totalSeats + ' seats sold, ' +
+          '$' + (summary.totals.revenueCents / 100).toFixed(2) + ' revenue, ' +
+          summary.totals.occupancyPercent + '% occupancy.'
+      );
+      showView('view-summary');
+    } catch (err) {
+      setText('sumTotals', err.message);
+      showView('view-summary');
+    }
+  }
+
+  // ---- boot -----------------------------------------------------------------
+  restoreSession();
+</script>
